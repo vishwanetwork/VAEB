@@ -1,0 +1,25 @@
+{
+  "name": "@vaeb/intent-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for constructing, signing, and serializing ERC-8150 IntentBundles",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest --passWithNoTests",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "ethers": "^6.13.0",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^20.14.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.0",
+    "@types/jest": "^29.5.0"
+  },
+  "files": ["dist"],
+  "license": "MIT"
+}

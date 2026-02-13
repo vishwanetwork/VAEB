@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Environment (contains private keys!)
+.env
+
+# Circuit build intermediates (regenerable via trusted setup)
+circuits/build/pot14_0000.ptau
+circuits/build/pot14_0001.ptau
+circuits/build/IntentVerifier_0000.zkey
+
+# Compiled contract artifacts (regenerable via solcjs)
+contracts/out/
+
+# Package build outputs (regenerable via npm run build)
+packages/*/dist/
+
+# Deployment results (generated per-run)
+contracts/deployments/
+
+# OS files
+.DS_Store
+Thumbs.db

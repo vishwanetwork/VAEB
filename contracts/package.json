@@ -1,0 +1,10 @@
+{
+  "name": "@vaeb/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "clean": "hardhat clean"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "vaeb": {
+      "command": "npx",
+      "args": ["-y", "@vaeb/mcp-server"],
+      "env": {
+        "WALLET_PRIVATE_KEY": "0x...",
+        "SUPPORTED_CHAINS": "base_sepolia,ethereum_sepolia",
+        "DEFAULT_CHAIN": "base_sepolia",
+        "X402_FACILITATOR": "https://x402.coinbase.com",
+        "X402_MAX_SERVICE_FEE_PER_TX": "0.10",
+        "X402_MAX_DAILY_SPEND": "5.00",
+        "PROVER_ENDPOINT": "http://localhost:3001",
+        "REQUIRE_MANUAL_APPROVAL": "true"
+      }
+    }
+  }
+}

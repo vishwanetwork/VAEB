@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VAEB — Verified Agent Execution Bundle</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0a0a0a; color: #e0e0e0; line-height: 1.6;
+    }
+    .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+    h1 { font-size: 2.5rem; color: #fff; margin-bottom: 0.5rem; }
+    .subtitle { color: #888; font-size: 1.1rem; margin-bottom: 2rem; }
+    .tag { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; margin-right: 6px; }
+    .tag-mcp { background: #1a3a5c; color: #60a5fa; }
+    .tag-x402 { background: #3a2a1a; color: #f59e0b; }
+    .tag-8150 { background: #1a3a2a; color: #34d399; }
+    .tag-8004 { background: #3a1a3a; color: #c084fc; }
+
+    .flow { display: flex; gap: 1rem; margin: 2rem 0; flex-wrap: wrap; }
+    .phase {
+      flex: 1; min-width: 220px; background: #141414; border: 1px solid #2a2a2a;
+      border-radius: 12px; padding: 1.5rem; position: relative; transition: all 0.3s;
+    }
+    .phase.active { border-color: #34d399; box-shadow: 0 0 20px rgba(52, 211, 153, 0.1); }
+    .phase.completed { border-color: #34d399; opacity: 0.8; }
+    .phase.pending { opacity: 0.4; }
+    .phase-num { position: absolute; top: -10px; left: 16px; background: #0a0a0a; padding: 0 8px; font-size: 0.75rem; color: #888; }
+    .phase h3 { font-size: 1rem; margin-bottom: 0.5rem; }
+    .phase p { font-size: 0.85rem; color: #999; }
+    .phase .status { margin-top: 1rem; font-size: 0.8rem; font-weight: 600; }
+    .status-ok { color: #34d399; }
+    .status-running { color: #f59e0b; }
+
+    .detail-panel {
+      background: #141414; border: 1px solid #2a2a2a; border-radius: 12px;
+      padding: 2rem; margin: 1rem 0;
+    }
+    .detail-panel h3 { color: #fff; margin-bottom: 1rem; font-size: 1.1rem; }
+    .code-block {
+      background: #1a1a1a; border: 1px solid #333; border-radius: 8px;
+      padding: 1rem; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem;
+      overflow-x: auto; color: #c0c0c0; margin: 0.5rem 0;
+    }
+    .code-key { color: #60a5fa; }
+    .code-str { color: #34d399; }
+    .code-num { color: #f59e0b; }
+    .code-comment { color: #666; }
+
+    .btn {
+      display: inline-block; padding: 10px 24px; border: none; border-radius: 8px;
+      font-size: 0.9rem; font-weight: 600; cursor: pointer; transition: all 0.2s;
+    }
+    .btn-primary { background: #34d399; color: #0a0a0a; }
+    .btn-primary:hover { background: #2fb886; }
+    .btn-primary:disabled { background: #333; color: #666; cursor: not-allowed; }
+
+    .metrics {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem; margin: 1rem 0;
+    }
+    .metric {
+      background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px;
+      padding: 1rem; text-align: center;
+    }
+    .metric .value { font-size: 1.5rem; font-weight: 700; color: #fff; }
+    .metric .label { font-size: 0.75rem; color: #888; margin-top: 4px; }
+
+    .arch-diagram {
+      background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px;
+      padding: 1.5rem; font-family: monospace; font-size: 0.75rem; white-space: pre;
+      overflow-x: auto; color: #c0c0c0; line-height: 1.4;
+    }
+
+    .progress-bar {
+      width: 100%; height: 4px; background: #2a2a2a; border-radius: 2px;
+      margin-top: 1rem; overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%; background: linear-gradient(90deg, #34d399, #60a5fa);
+      border-radius: 2px; transition: width 0.5s ease;
+    }
+
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+    .animating { animation: pulse 1.5s infinite; }
+
+    .log-entry { padding: 4px 0; border-bottom: 1px solid #1a1a1a; font-size: 0.8rem; }
+    .log-time { color: #666; margin-right: 8px; }
+    .log-ok { color: #34d399; }
+    .log-warn { color: #f59e0b; }
+    .log-info { color: #60a5fa; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <h1>VAEB</h1>
+    <p class="subtitle">
+      Verified Agent Execution Bundle —
+      <span class="tag tag-mcp">MCP</span>
+      <span class="tag tag-x402">x402</span>
+      <span class="tag tag-8150">ERC-8150</span>
+      <span class="tag tag-8004">ERC-8004</span>
+    </p>
+
+    <!-- Architecture -->
+    <div class="detail-panel">
+      <h3>Architecture</h3>
+      <div class="arch-diagram">
+┌──────────────────────────────────────────────────────────────────┐
+│                    ANY AI AGENT / APPLICATION                     │
+│     (Claude, GPT, custom agent SDK, A2A peer, trading bot)       │
+└──────────────────────┬───────────────────────────────────────────┘
+                       │  MCP (JSON-RPC)
+                       ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                      VAEB MCP SERVER                             │
+│  ┌────────────┐ ┌────────────┐ ┌──────────┐ ┌────────┐ ┌──────┐│
+│  │Chain Tools │ │Intent Tools│ │Verify    │ │Pay     │ │Trust ││
+│  │read_balance│ │create      │ │prove     │ │(x402)  │ │(8004)││
+│  │get_price   │ │sign_intent │ │verify    │ │        │ │      ││
+│  │estimate_gas│ │add_action  │ │check     │ │        │ │      ││
+│  └────────────┘ └────────────┘ └──────────┘ └────────┘ └──────┘│
+└────────────┬──────────┬──────────────┬──────────┬───────────────┘
+             │          │              │          │
+    ┌────────▼──┐  ┌────▼─────┐  ┌────▼────┐  ┌─▼──────────┐
+    │Settlement │  │ZK Prover │  │  x402   │  │ERC-8004    │
+    │Rail Router│  │(Groth16) │  │Facilitr │  │Trust Engine│
+    ├───────────┤  └──────────┘  └─────────┘  ├────────────┤
+    │Base │ ETH │                              │Identity    │
+    │Arb  │ Sol │                              │Reputation  │
+    │Poly │     │                              │Validation  │
+    └───────────┘                              └────────────┘</div>
+    </div>
+
+    <!-- Flow Phases -->
+    <h3 style="margin: 2rem 0 1rem; color: #fff;">Execution Flow</h3>
+    <div class="flow" id="flow-phases">
+      <div class="phase pending" id="phase-1">
+        <span class="phase-num">Phase 1</span>
+        <h3>🔍 Discovery</h3>
+        <p>MCP tool discovery + ERC-8004 agent lookup</p>
+        <div class="status" id="status-1"></div>
+      </div>
+      <div class="phase pending" id="phase-2">
+        <span class="phase-num">Phase 2</span>
+        <h3>📋 Intent</h3>
+        <p>Build IntentBundle + derive calldata</p>
+        <div class="status" id="status-2"></div>
+      </div>
+      <div class="phase pending" id="phase-3">
+        <span class="phase-num">Phase 3</span>
+        <h3>✍️ Approval</h3>
+        <p>User signs EIP-712 typed data</p>
+        <div class="status" id="status-3"></div>
+      </div>
+      <div class="phase pending" id="phase-4">
+        <span class="phase-num">Phase 4</span>
+        <h3>⚡ Execution</h3>
+        <p>x402 pay → ZK proof → on-chain execute</p>
+        <div class="status" id="status-4"></div>
+      </div>
+      <div class="phase pending" id="phase-5">
+        <span class="phase-num">Phase 5</span>
+        <h3>📊 Feedback</h3>
+        <p>Post reputation to ERC-8004</p>
+        <div class="status" id="status-5"></div>
+      </div>
+    </div>
+
+    <div style="margin: 1rem 0;">
+      <button class="btn btn-primary" id="run-demo" onclick="runDemo()">
+        ▶ Run Full Demo
+      </button>
+      <span id="demo-status" style="margin-left: 1rem; font-size: 0.85rem; color: #888;"></span>
+    </div>
+
+    <div class="progress-bar"><div class="progress-fill" id="progress" style="width: 0%;"></div></div>
+
+    <!-- Metrics -->
+    <div class="metrics" id="metrics" style="display: none;">
+      <div class="metric">
+        <div class="value" id="m-swap">—</div>
+        <div class="label">Swap Result</div>
+      </div>
+      <div class="metric">
+        <div class="value" id="m-proof">—</div>
+        <div class="label">Proof Time</div>
+      </div>
+      <div class="metric">
+        <div class="value" id="m-gas">—</div>
+        <div class="label">Gas Cost</div>
+      </div>
+      <div class="metric">
+        <div class="value" id="m-fee">—</div>
+        <div class="label">Service Fee</div>
+      </div>
+      <div class="metric">
+        <div class="value" id="m-rep">—</div>
+        <div class="label">Agent Score</div>
+      </div>
+    </div>
+
+    <!-- Live Log -->
+    <div class="detail-panel" style="margin-top: 1rem;">
+      <h3>Live Execution Log</h3>
+      <div id="log" style="max-height: 400px; overflow-y: auto; font-family: monospace;"></div>
+    </div>
+  </div>
+
+  <script>
+    function log(msg, type = 'info') {
+      const el = document.getElementById('log');
+      const time = new Date().toISOString().split('T')[1].split('.')[0];
+      el.innerHTML += `<div class="log-entry"><span class="log-time">${time}</span><span class="log-${type}">${msg}</span></div>`;
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function setPhase(n, state) {
+      for (let i = 1; i <= 5; i++) {
+        const el = document.getElementById(`phase-${i}`);
+        el.className = 'phase ' + (i < n ? 'completed' : i === n ? 'active' : 'pending');
+      }
+    }
+
+    function setStatus(n, text, ok = true) {
+      document.getElementById(`status-${n}`).innerHTML = `<span class="${ok ? 'status-ok' : 'status-running'}">${text}</span>`;
+    }
+
+    function setProgress(pct) {
+      document.getElementById('progress').style.width = pct + '%';
+    }
+
+    async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    async function runDemo() {
+      const btn = document.getElementById('run-demo');
+      btn.disabled = true;
+      document.getElementById('log').innerHTML = '';
+      document.getElementById('metrics').style.display = 'none';
+
+      // Phase 1: Discovery
+      setPhase(1, 'active');
+      setStatus(1, 'Discovering...', false);
+      log('MCP: tools/list → VAEB MCP Server', 'info');
+      await sleep(500);
+      log('Available tools: create_intent, execute_intent, read_balance, discover_agents, ...', 'info');
+      await sleep(300);
+      log('read_balance({ chain: "base_sepolia", token: "USDC" }) → 500.00 USDC', 'ok');
+      await sleep(400);
+      log('discover_agents({ chain: "base", operation: "swap", min_reputation: 7.0 })', 'info');
+      await sleep(600);
+      log('→ Recommended: Agent #42 (score: 9.2, 1847 feedbacks, 100% validation rate)', 'ok');
+      setStatus(1, '✓ Agent #42 selected');
+      setProgress(20);
+
+      // Phase 2: Intent
+      await sleep(400);
+      setPhase(2, 'active');
+      setStatus(2, 'Building intent...', false);
+      log('create_intent({ actions: [{ type: "SWAP", from: "USDC", to: "ETH", amount: 100 }] })', 'info');
+      await sleep(700);
+      log('Settlement Router → Base Sepolia (cheapest gas, sufficient liquidity)', 'info');
+      await sleep(300);
+      log('Derived calldata: USDC.approve() + Router.exactInputSingle()', 'info');
+      await sleep(400);
+      log('IntentBundle constructed. ID: 0x305f7f05...', 'ok');
+      log('Human readable: "Swap 100 USDC → ~0.0308 ETH on Uniswap (Base)"', 'ok');
+      setStatus(2, '✓ Intent created');
+      setProgress(40);
+
+      // Phase 3: Approval
+      await sleep(400);
+      setPhase(3, 'active');
+      setStatus(3, 'Awaiting signature...', false);
+      log('Agent presents to user: "Swap 100 USDC for ~0.0308 ETH on Base. Service fee: $0.02. Approve?"', 'warn');
+      await sleep(1000);
+      log('User signs EIP-712 IntentBundle via wallet', 'info');
+      await sleep(500);
+      log('Signature: 0x5d9c296c...7bae771c ✓', 'ok');
+      setStatus(3, '✓ Signed');
+      setProgress(55);
+
+      // Phase 4: Execution
+      await sleep(400);
+      setPhase(4, 'active');
+      setStatus(4, 'Executing...', false);
+      log('execute_intent({ intent_id: "0x305f...", signature: "0x5d9c..." })', 'info');
+      await sleep(300);
+      log('[x402] HTTP 402 → PAYMENT-REQUIRED { scheme: "exact", amount: 20000, token: "USDC" }', 'warn');
+      await sleep(400);
+      log('[x402] Agent signs payment → X-PAYMENT header → verify + settle → 0.02 USDC ✓', 'ok');
+      await sleep(300);
+      log('[ZK Prover] Generating Groth16 proof...', 'warn');
+
+      // Animate proof generation
+      const proofStart = Date.now();
+      for (let i = 0; i < 6; i++) {
+        await sleep(400);
+        log(`[ZK Prover] Computing... ${((i + 1) * 16)}%`, 'info');
+      }
+      const proofTime = ((Date.now() - proofStart) / 1000).toFixed(1);
+      log(`[ZK Prover] Proof generated in ${proofTime}s ✓`, 'ok');
+
+      await sleep(300);
+      log('[On-Chain] AgentWallet.executeWithProof(proof, signature, publicInputs, calls)', 'info');
+      await sleep(400);
+      log('  1. ZK verifier: proof matches public inputs ✓', 'ok');
+      await sleep(200);
+      log('  2. EIP-712 signature: owner verified ✓', 'ok');
+      await sleep(200);
+      log('  3. Nonce: unused + not expired ✓', 'ok');
+      await sleep(200);
+      log('  4. Atomic execute: USDC.approve + Router.swap → 0.03082 ETH ✓', 'ok');
+      await sleep(200);
+      log('  5. Nonce marked used ✓', 'ok');
+      log('Transaction confirmed! Gas: 245,000 (~$0.0011)', 'ok');
+      setStatus(4, '✓ Executed');
+      setProgress(85);
+
+      // Phase 5: Feedback
+      await sleep(400);
+      setPhase(5, 'active');
+      setStatus(5, 'Posting feedback...', false);
+      log('Computing execution quality score...', 'info');
+      await sleep(500);
+      log(`  proof_time: ${proofTime}s → +2 | gas: 98th pct → +2 | slippage: 0.3% → +2`, 'info');
+      log('  Composite score: 9 / 10', 'ok');
+      await sleep(400);
+      log('ReputationRegistry.giveFeedback(agentId: 42, score: 9, tags: ["swap"]) ✓', 'ok');
+      await sleep(300);
+      log('ValidationRegistry.validationRequest() → independent re-verification queued', 'info');
+      log('Agent 42: feedbacks 1847→1848 | score 9.2 maintained | validations 412→413', 'ok');
+      setStatus(5, '✓ Reputation updated');
+      setProgress(100);
+
+      // Show metrics
+      document.getElementById('metrics').style.display = 'grid';
+      document.getElementById('m-swap').textContent = '100 USDC → 0.0308 ETH';
+      document.getElementById('m-proof').textContent = proofTime + 's';
+      document.getElementById('m-gas').textContent = '$0.001';
+      document.getElementById('m-fee').textContent = '$0.02';
+      document.getElementById('m-rep').textContent = '9.2 / 10';
+
+      document.getElementById('demo-status').textContent = 'Demo complete!';
+      btn.disabled = false;
+    }
+  </script>
+</body>
+</html>
