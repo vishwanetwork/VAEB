@@ -2,7 +2,6 @@ pragma circom 2.1.6;
 
 include "circomlib/circuits/poseidon.circom";
 include "circomlib/circuits/comparators.circom";
-include "circomlib/circuits/bitify.circom";
 
 /**
  * IntentVerifier — ERC-8150 ZK Circuit
@@ -53,7 +52,6 @@ template IntentVerifier(MAX_ACTIONS) {
     signal input derivedTargets[MAX_ACTIONS * 2]; // Each action may produce 1-2 calls
     signal input derivedValues[MAX_ACTIONS * 2];
     signal input derivedDataHashes[MAX_ACTIONS * 2]; // Hash of each call's data
-    signal input numDerivedCalls;
 
     // ─── Output ─────────────────────────────────────────────────
     signal output valid;
@@ -89,15 +87,26 @@ template IntentVerifier(MAX_ACTIONS) {
     // Final commitment must match public input
     commitment === actionAccumulator.out;
 
-    // ═══════════════════════════════════════════════════════════
-    // CONSTRAINT 2: Verify signer/payer relationship
-    // ═══════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════
+    // CONSTRAINT 2: NumActions bounds check
+    // ═══════════════════════════════════════════════════════
 
-    // The payer (AgentWallet) is controlled by the signer
-    // In the on-chain verification, the signature check handles this,
-    // but we constrain that the signer is part of the proof commitment
-    signal signerCheck;
-    signerCheck <== signerAddress; // Constrain it's included in proof
+    component numActionsCheck = LessEqThan(8);
+    numActionsCheck.in[0] <== numActions;
+    numActionsCheck.in[1] <== MAX_ACTIONS;
+    numActionsCheck.out === 1;
+
+    // Ensure unused slots are zeroed
+    signal unusedMustBeZero[MAX_ACTIONS];
+    component isUsedSlot[MAX_ACTIONS];
+    for (var i = 0; i < MAX_ACTIONS; i++) {
+        isUsedSlot[i] = LessThan(8);
+        isUsedSlot[i].in[0] <== i;
+        isUsedSlot[i].in[1] <== numActions;
+
+        unusedMustBeZero[i] <== (1 - isUsedSlot[i].out) * actionAmounts[i];
+        unusedMustBeZero[i] === 0;
+    }
 
     // ═══════════════════════════════════════════════════════════
     // CONSTRAINT 3: Verify derived calldata hash
@@ -129,7 +138,10 @@ template IntentVerifier(MAX_ACTIONS) {
     component isTransfer[MAX_ACTIONS];
     component isSwap[MAX_ACTIONS];
     signal transferTargetDiff[MAX_ACTIONS];
+    signal transferAmountCorrect[MAX_ACTIONS];
     signal swapApproveTargetDiff[MAX_ACTIONS];
+    signal approveAmountCorrect[MAX_ACTIONS];
+    signal swapTargetCorrect[MAX_ACTIONS];
 
     for (var i = 0; i < MAX_ACTIONS; i++) {
         // Check if action type is TRANSFER (type == 1)
@@ -147,26 +159,22 @@ template IntentVerifier(MAX_ACTIONS) {
         transferTargetDiff[i] <== (derivedTargets[i * 2] - actionTokens[i]) * isTransfer[i].out;
         transferTargetDiff[i] === 0;
 
+        transferAmountCorrect[i] <== (derivedValues[i * 2] - actionAmounts[i]) * isTransfer[i].out;
+        transferAmountCorrect[i] === 0;
+
         // For SWAP: first derived call (approve) target must be the token
         swapApproveTargetDiff[i] <== (derivedTargets[i * 2] - actionTokens[i]) * isSwap[i].out;
         swapApproveTargetDiff[i] === 0;
+
+        approveAmountCorrect[i] <== (derivedValues[i * 2] - actionAmounts[i]) * isSwap[i].out;
+        approveAmountCorrect[i] === 0;
+
+        // Second call: swap on router
+        swapTargetCorrect[i] <== (derivedTargets[i * 2 + 1] - actionTargets[i]) * isSwap[i].out;
+        swapTargetCorrect[i] === 0;
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // CONSTRAINT 5: Chain ID consistency
-    // ═══════════════════════════════════════════════════════════
-
-    // Already constrained through the commitment hash above
-    // Additional explicit constraint for clarity
-    signal chainIdCheck;
-    chainIdCheck <== chainId * 1;
-
-    // ═══════════════════════════════════════════════════════════
-    // OUTPUT: valid flag
-    // ═══════════════════════════════════════════════════════════
-
-    valid <== 1; // If all constraints pass, proof is valid
+    valid <== 1;
 }
 
-// Instantiate with MAX_ACTIONS = 4 (supports up to 4 actions per intent)
 component main {public [commitment, chainId, signerAddress, multicallDataHash, nonce, expiry]} = IntentVerifier(4);
