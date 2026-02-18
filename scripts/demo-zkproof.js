@@ -357,7 +357,7 @@ async function main() {
   const callDataHash = BigInt(ethers.keccak256(transferCalldata));
   const singleCallHashes = [];
   // Call 0: real transfer
-  singleCallHashes.push(poseidonHash([tokenAddr, 0n, callDataHash]));
+  singleCallHashes.push(poseidonHash([tokenAddr, amount, callDataHash]));
   // Calls 1-7: zero-padded
   for (let i = 1; i < 8; i++) {
     singleCallHashes.push(poseidonHash([0n, 0n, 0n]));
@@ -389,9 +389,8 @@ async function main() {
     actionTargets: [targetAddr.toString(), "0", "0", "0"],
     actionAmounts: [amount.toString(), "0", "0", "0"],
     derivedTargets: [tokenAddr.toString(), "0", "0", "0", "0", "0", "0", "0"],
-    derivedValues: ["0", "0", "0", "0", "0", "0", "0", "0"],
-    derivedDataHashes: [callDataHash.toString(), "0", "0", "0", "0", "0", "0", "0"],
-    numDerivedCalls: "1",
+    derivedValues: [amount.toString(), "0", "0", "0", "0", "0", "0", "0"],
+    derivedDataHashes: [callDataHash.toString(), "0", "0", "0", "0", "0", "0", "0"]
   };
 
   console.log("⏳ Generating Groth16 proof (this may take 10-30 seconds)...\n");
