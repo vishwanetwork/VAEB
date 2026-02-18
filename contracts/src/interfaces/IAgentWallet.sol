@@ -45,8 +45,11 @@ interface IAgentWallet {
 
     error InvalidProof();
     error InvalidSignature();
-    error NonceAlreadyUsed();
-    error IntentExpired();
+    error NonceAlreadyUsed(bytes32 nonce);
+    error IntentExpired(uint256 expiry);
+    error WrongChain(uint256 expected, uint256 provided);
+    error SignerMismatch(address expected, address provided);
+    error EmptyCalls();
     error CallFailed(uint256 index, bytes reason);
     error NotOwner();
     error NotAgent();

@@ -18,8 +18,14 @@ contract AgentWalletFactory {
         bytes32 salt
     );
 
+    event DefaultVerifierUpdated(
+        address indexed oldVerifier, 
+        address indexed newVerifier
+    );
+
     // ─── State ──────────────────────────────────────────────────
 
+    address public factoryOwner;
     address public defaultZkVerifier;
     mapping(address => address[]) public walletsByOwner;
     mapping(address => bool) public isWallet;
@@ -27,8 +33,12 @@ contract AgentWalletFactory {
     // ─── Constructor ────────────────────────────────────────────
 
     constructor(address _defaultZkVerifier) {
+        factoryOwner = msg.sender;
         defaultZkVerifier = _defaultZkVerifier;
     }
+
+    // Errors
+    error NotFactoryOwner();
 
     // ─── Create Wallet ──────────────────────────────────────────
 
@@ -118,6 +128,9 @@ contract AgentWalletFactory {
     // ─── Admin ──────────────────────────────────────────────────
 
     function setDefaultZkVerifier(address newVerifier) external {
+        if (msg.sender != factoryOwner) revert NotFactoryOwner();
+        address old = defaultZkVerifier;
         defaultZkVerifier = newVerifier;
+        emit DefaultVerifierUpdated(old, newVerifier);
     }
 }

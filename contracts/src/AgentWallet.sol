@@ -105,18 +105,25 @@ contract AgentWallet is IAgentWallet, EIP712 {
         if (recovered != owner) revert InvalidSignature();
 
         // 3. Check nonce
-        if (_usedNonces[publicInputs.nonce]) revert NonceAlreadyUsed();
+        if (_usedNonces[publicInputs.nonce]) 
+            revert NonceAlreadyUsed(publicInputs.nonce);
 
         // 4. Check expiry
-        if (block.timestamp > publicInputs.expiry) revert IntentExpired();
+        if (block.timestamp > publicInputs.expiry) 
+            revert IntentExpired(publicInputs.expiry);
 
         // 5. Verify chain ID
-        require(publicInputs.chainId == block.chainid, "Wrong chain");
+        if (publicInputs.chainId != block.chainid)
+            revert WrongChain(block.chainid, publicInputs.chainId);
 
         // 6. Verify signer matches owner
-        require(publicInputs.signerAddress == owner, "Signer mismatch");
+        if (publicInputs.signerAddress != owner)
+            revert SignerMismatch(owner, publicInputs.signerAddress);
 
-        // 7. Execute all calls atomically
+        // 7. Reject empty call arrays
+        if (calls.length == 0) revert EmptyCalls();
+
+        // 8. Execute all calls atomically
         // NOTE: The ZK proof already cryptographically verifies that the calls
         // are correctly derived from the signed intent (via Poseidon hashing
         // inside the circuit). An on-chain keccak256 check is unnecessary here
@@ -124,7 +131,7 @@ contract AgentWallet is IAgentWallet, EIP712 {
         // The executeDirectly() path still has its own keccak256 check.
         _executeCalls(calls);
 
-        // 8. Mark nonce as used
+        // 9. Mark nonce as used
         _usedNonces[publicInputs.nonce] = true;
 
         uint256 gasUsed = gasStart - gasleft();
@@ -145,10 +152,15 @@ contract AgentWallet is IAgentWallet, EIP712 {
         Call[] calldata calls
     ) external override onlyOwnerOrAgent {
         // Check nonce
-        if (_usedNonces[nonce]) revert NonceAlreadyUsed();
+        if (_usedNonces[nonce]) 
+            revert NonceAlreadyUsed(nonce);
 
         // Check expiry
-        if (block.timestamp > expiry) revert IntentExpired();
+        if (block.timestamp > expiry) 
+            revert IntentExpired(expiry);
+
+        // Reject empty call arrays
+        if (calls.length == 0) revert EmptyCalls();
 
         // Verify signature over (nonce, expiry, callsHash)
         bytes32 callsHash = _hashCalls(calls);
