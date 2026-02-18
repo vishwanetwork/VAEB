@@ -390,7 +390,7 @@ async function main() {
     actionAmounts: [amount.toString(), "0", "0", "0"],
     derivedTargets: [tokenAddr.toString(), "0", "0", "0", "0", "0", "0", "0"],
     derivedValues: [amount.toString(), "0", "0", "0", "0", "0", "0", "0"],
-    derivedDataHashes: [callDataHash.toString(), "0", "0", "0", "0", "0", "0", "0"],
+    derivedDataHashes: [callDataHash.toString(), "0", "0", "0", "0", "0", "0", "0"]
   };
 
   console.log("⏳ Generating Groth16 proof (this may take 10-30 seconds)...\n");
