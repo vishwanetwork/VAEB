@@ -12,6 +12,10 @@
     "build:sdk": "npm run build -w @vaeb/intent-sdk",
     "build:mcp": "npm run build -w @vaeb/mcp-server",
     "build:prover": "npm run build -w @vaeb/prover-service",
+    "build:server": "npm run build -w @vaeb/server",
+    "build:frontend": "npm run build -w @vaeb/frontend",
+    "dev:server": "npm run dev -w @vaeb/server",
+    "dev:frontend": "npm run dev -w @vaeb/frontend",
     "demo": "node scripts/demo.js"
   },
   "keywords": [
