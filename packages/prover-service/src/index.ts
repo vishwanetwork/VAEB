@@ -12,7 +12,7 @@
 
 import express from "express";
 import cors from "cors";
-import { ProverEngine } from "./prover";
+import { ProverEngine } from "./prover-engine";
 
 const app = express();
 app.use(cors());
@@ -25,7 +25,12 @@ let totalProofTime = 0;
 // ─── Health Check ─────────────────────────────────────────────
 
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", proofCount, avgProofTimeMs: proofCount > 0 ? totalProofTime / proofCount : 0 });
+  res.json({
+    status: "ok",
+    proofCount,
+    avgProofTimeMs: proofCount > 0 ? totalProofTime / proofCount : 0,
+    mode: prover.isSimulated ? "simulated" : "groth16",
+  });
 });
 
 // ─── Stats ────────────────────────────────────────────────────
@@ -35,7 +40,7 @@ app.get("/stats", (_req, res) => {
     proofCount,
     avgProofTimeMs: proofCount > 0 ? Math.round(totalProofTime / proofCount) : 0,
     totalProofTimeMs: totalProofTime,
-    proofType: "groth16",
+    mode: prover.isSimulated ? "simulated" : "groth16",
     circuitName: "IntentVerifier",
   });
 });
@@ -68,7 +73,7 @@ app.post("/prove", async (req, res) => {
       proof: result.proof,
       publicSignals: result.publicSignals,
       proofTimeMs,
-      proofType: "groth16",
+      mode: result.mode,
     });
   } catch (error: any) {
     console.error("Proof generation failed:", error);
