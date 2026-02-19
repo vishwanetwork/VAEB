@@ -2,12 +2,14 @@ import express from 'express';
 import cors from 'cors';
 import { CONFIG } from './config';
 import routes from './routes';
+import chatRouter from './chat';
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 app.use('/api', routes);
+app.use('/api', chatRouter);
 
 app.listen(CONFIG.port, () => {
   console.log(`\n  VAEB Server`);

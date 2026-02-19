@@ -2,9 +2,14 @@
   "name": "@vaeb/mcp-server",
   "version": "0.1.0",
   "description": "VAEB MCP Server — AI agent interface for verified on-chain execution",
-  "main": "dist/index.js",
+  "main": "dist/lib.js",
+  "types": "dist/lib.d.ts",
   "bin": {
     "vaeb-mcp": "./dist/index.js"
+  },
+  "exports": {
+    ".": "./dist/lib.js",
+    "./server": "./dist/index.js"
   },
   "scripts": {
     "build": "tsc",

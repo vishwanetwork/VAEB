@@ -21,6 +21,11 @@
  *     - simulate_intent — Dry-run an intent via eth_call
  *     - cancel_intent   — Invalidate a nonce
  *     - post_feedback   — Post execution feedback to ERC-8004
+ *
+ *   Marketplace (Rent a Human):
+ *     - search_marketplace — Search for available humans
+ *     - hire_human         — Create a payment intent to hire someone
+ *     - get_wallet_balance — Check agent wallet balance
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -30,22 +35,23 @@ import {
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
-import { chainTools } from "./tools/chain-tools";
-import { intentTools } from "./tools/intent-tools";
-import { trustTools } from "./tools/trust-tools";
 import { getToolDefinitions } from "./tool-registry";
+import { handleToolCall, MCPConfig } from "./handlers";
 
 // ─── Environment Configuration ──────────────────────────────────
 
-const config = {
+const config: MCPConfig = {
   walletPrivateKey: process.env.WALLET_PRIVATE_KEY || "",
   supportedChains: (process.env.SUPPORTED_CHAINS || "base_sepolia").split(","),
   defaultChain: process.env.DEFAULT_CHAIN || "base_sepolia",
-  x402Facilitator: process.env.X402_FACILITATOR || "https://x402.coinbase.com",
-  maxServiceFeePerTx: process.env.X402_MAX_SERVICE_FEE_PER_TX || "0.10",
-  maxDailySpend: process.env.X402_MAX_DAILY_SPEND || "5.00",
   proverEndpoint: process.env.PROVER_ENDPOINT || "http://localhost:3001",
   requireManualApproval: process.env.REQUIRE_MANUAL_APPROVAL === "true",
+  rpcUrl: process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org",
+  chainId: parseInt(process.env.CHAIN_ID || "84532"),
+  contracts: {
+    AgentWallet: process.env.AGENT_WALLET_ADDRESS || "",
+    MockUSDC: process.env.MOCK_USDC_ADDRESS || "",
+  },
 };
 
 // ─── Create MCP Server ──────────────────────────────────────────
@@ -76,30 +82,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   try {
-    // Route to appropriate tool handler
-    let result: any;
-
-    // Chain Tools (free)
-    if (["read_balance", "get_price", "estimate_gas", "get_receipt"].includes(name)) {
-      result = await chainTools.handle(name, args || {}, config);
-    }
-    // Intent Tools (paid via x402)
-    else if (["create_intent", "execute_intent", "simulate_intent", "cancel_intent"].includes(name)) {
-      result = await intentTools.handle(name, args || {}, config);
-    }
-    // Trust Tools (free — queries ERC-8004)
-    else if (["discover_agents", "get_agent_reputation", "get_agent_validations", "post_feedback", "compare_agents"].includes(name)) {
-      result = await trustTools.handle(name, args || {}, config);
-    }
-    else {
-      return {
-        content: [{ type: "text", text: `Unknown tool: ${name}` }],
-        isError: true,
-      };
-    }
+    const toolResult = await handleToolCall(name, args || {}, config);
 
     return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      content: [{ type: "text", text: JSON.stringify(toolResult.result, null, 2) }],
     };
   } catch (error: any) {
     return {
@@ -114,7 +100,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("🚀 VAEB MCP Server running (stdio transport)");
+  console.error("VAEB MCP Server running (stdio transport)");
   console.error(`   Chain: ${config.defaultChain}`);
   console.error(`   Tools: ${getToolDefinitions().length} available`);
 }
