@@ -3,350 +3,1205 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>VAEB — Verified Agent Execution Bundle</title>
+  <title>VAEB</title>
   <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
     * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg: #050505;
+      --surface: #0a0a0a;
+      --border: #1a1a1a;
+      --border-hover: #2a2a2a;
+      --text: #e8e8e8;
+      --text-dim: #666;
+      --text-muted: #444;
+      --accent: #fff;
+      --dot: #222;
+      --dot-active: #555;
+      --success: #888;
+      --error: #666;
+    }
+
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #0a0a0a; color: #e0e0e0; line-height: 1.6;
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      min-height: 100vh;
+      overflow-x: hidden;
     }
-    .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
-    h1 { font-size: 2.5rem; color: #fff; margin-bottom: 0.5rem; }
-    .subtitle { color: #888; font-size: 1.1rem; margin-bottom: 2rem; }
-    .tag { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; margin-right: 6px; }
-    .tag-mcp { background: #1a3a5c; color: #60a5fa; }
-    .tag-x402 { background: #3a2a1a; color: #f59e0b; }
-    .tag-8150 { background: #1a3a2a; color: #34d399; }
-    .tag-8004 { background: #3a1a3a; color: #c084fc; }
 
-    .flow { display: flex; gap: 1rem; margin: 2rem 0; flex-wrap: wrap; }
-    .phase {
-      flex: 1; min-width: 220px; background: #141414; border: 1px solid #2a2a2a;
-      border-radius: 12px; padding: 1.5rem; position: relative; transition: all 0.3s;
+    /* Dot grid background */
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-image: radial-gradient(circle, var(--dot) 1px, transparent 1px);
+      background-size: 32px 32px;
+      pointer-events: none;
+      z-index: 0;
     }
-    .phase.active { border-color: #34d399; box-shadow: 0 0 20px rgba(52, 211, 153, 0.1); }
-    .phase.completed { border-color: #34d399; opacity: 0.8; }
-    .phase.pending { opacity: 0.4; }
-    .phase-num { position: absolute; top: -10px; left: 16px; background: #0a0a0a; padding: 0 8px; font-size: 0.75rem; color: #888; }
-    .phase h3 { font-size: 1rem; margin-bottom: 0.5rem; }
-    .phase p { font-size: 0.85rem; color: #999; }
-    .phase .status { margin-top: 1rem; font-size: 0.8rem; font-weight: 600; }
-    .status-ok { color: #34d399; }
-    .status-running { color: #f59e0b; }
 
-    .detail-panel {
-      background: #141414; border: 1px solid #2a2a2a; border-radius: 12px;
-      padding: 2rem; margin: 1rem 0;
+    .app {
+      position: relative;
+      z-index: 1;
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 80px 24px 120px;
     }
-    .detail-panel h3 { color: #fff; margin-bottom: 1rem; font-size: 1.1rem; }
-    .code-block {
-      background: #1a1a1a; border: 1px solid #333; border-radius: 8px;
-      padding: 1rem; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem;
-      overflow-x: auto; color: #c0c0c0; margin: 0.5rem 0;
+
+    /* Header */
+    .header {
+      margin-bottom: 80px;
     }
-    .code-key { color: #60a5fa; }
-    .code-str { color: #34d399; }
-    .code-num { color: #f59e0b; }
-    .code-comment { color: #666; }
+
+    .logo {
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: 0.3em;
+      color: var(--text-dim);
+      margin-bottom: 32px;
+    }
+
+    .tagline {
+      font-size: 28px;
+      font-weight: 300;
+      line-height: 1.4;
+      color: var(--text);
+      max-width: 480px;
+    }
+
+    .tagline em {
+      font-style: normal;
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    /* Sections */
+    .section {
+      margin-bottom: 64px;
+    }
+
+    .section-label {
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.2em;
+      color: var(--text-muted);
+      margin-bottom: 24px;
+      text-transform: uppercase;
+    }
+
+    /* Wallet connection */
+    .wallet-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px 24px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+    }
+
+    .wallet-info {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .wallet-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      transition: background 0.3s;
+    }
+
+    .wallet-dot.connected {
+      background: var(--accent);
+    }
+
+    .wallet-address {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      color: var(--text-dim);
+    }
 
     .btn {
-      display: inline-block; padding: 10px 24px; border: none; border-radius: 8px;
-      font-size: 0.9rem; font-weight: 600; cursor: pointer; transition: all 0.2s;
-    }
-    .btn-primary { background: #34d399; color: #0a0a0a; }
-    .btn-primary:hover { background: #2fb886; }
-    .btn-primary:disabled { background: #333; color: #666; cursor: not-allowed; }
-
-    .metrics {
-      display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 1rem; margin: 1rem 0;
-    }
-    .metric {
-      background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px;
-      padding: 1rem; text-align: center;
-    }
-    .metric .value { font-size: 1.5rem; font-weight: 700; color: #fff; }
-    .metric .label { font-size: 0.75rem; color: #888; margin-top: 4px; }
-
-    .arch-diagram {
-      background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px;
-      padding: 1.5rem; font-family: monospace; font-size: 0.75rem; white-space: pre;
-      overflow-x: auto; color: #c0c0c0; line-height: 1.4;
+      font-family: 'Inter', sans-serif;
+      font-size: 13px;
+      font-weight: 500;
+      padding: 10px 20px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: transparent;
+      color: var(--text);
+      cursor: pointer;
+      transition: all 0.2s;
     }
 
-    .progress-bar {
-      width: 100%; height: 4px; background: #2a2a2a; border-radius: 2px;
-      margin-top: 1rem; overflow: hidden;
-    }
-    .progress-fill {
-      height: 100%; background: linear-gradient(90deg, #34d399, #60a5fa);
-      border-radius: 2px; transition: width 0.5s ease;
+    .btn:hover {
+      border-color: var(--text-dim);
+      background: var(--surface);
     }
 
-    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
-    .animating { animation: pulse 1.5s infinite; }
+    .btn:disabled {
+      opacity: 0.3;
+      cursor: not-allowed;
+    }
 
-    .log-entry { padding: 4px 0; border-bottom: 1px solid #1a1a1a; font-size: 0.8rem; }
-    .log-time { color: #666; margin-right: 8px; }
-    .log-ok { color: #34d399; }
-    .log-warn { color: #f59e0b; }
-    .log-info { color: #60a5fa; }
+    .btn-primary {
+      background: var(--accent);
+      color: var(--bg);
+      border-color: var(--accent);
+    }
+
+    .btn-primary:hover {
+      opacity: 0.9;
+    }
+
+    .btn-primary:disabled {
+      opacity: 0.2;
+    }
+
+    /* Balances */
+    .balances {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-top: 20px;
+    }
+
+    .balance-card {
+      padding: 20px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+    }
+
+    .balance-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      letter-spacing: 0.1em;
+      margin-bottom: 8px;
+    }
+
+    .balance-value {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 20px;
+      font-weight: 500;
+      color: var(--text);
+    }
+
+    .balance-unit {
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-left: 4px;
+    }
+
+    .balance-sub {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+      margin-top: 4px;
+    }
+
+    /* Intent form */
+    .form-group {
+      margin-bottom: 20px;
+    }
+
+    .form-label {
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-bottom: 8px;
+      display: block;
+    }
+
+    .input {
+      width: 100%;
+      padding: 14px 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-family: 'Inter', sans-serif;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .input:focus {
+      border-color: var(--text-dim);
+    }
+
+    .input::placeholder {
+      color: var(--text-muted);
+    }
+
+    .input-mono {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+    }
+
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    select.input {
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23666'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 16px center;
+      padding-right: 40px;
+      cursor: pointer;
+    }
+
+    /* Steps / Flow */
+    .flow-steps {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      margin-bottom: 32px;
+      padding: 0 4px;
+    }
+
+    .step-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--border);
+      transition: all 0.4s;
+      flex-shrink: 0;
+    }
+
+    .step-dot.active {
+      background: var(--accent);
+      box-shadow: 0 0 12px rgba(255,255,255,0.15);
+    }
+
+    .step-dot.done {
+      background: var(--text-dim);
+    }
+
+    .step-line {
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+      transition: background 0.4s;
+    }
+
+    .step-line.done {
+      background: var(--text-muted);
+    }
+
+    .step-labels {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 12px;
+    }
+
+    .step-label {
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      transition: color 0.3s;
+    }
+
+    .step-label.active {
+      color: var(--text);
+    }
+
+    .step-label.done {
+      color: var(--text-dim);
+    }
+
+    /* Review panel */
+    .review-panel {
+      padding: 24px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      margin-bottom: 20px;
+    }
+
+    .review-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .review-row:last-child {
+      border-bottom: none;
+    }
+
+    .review-key {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .review-val {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      color: var(--text);
+    }
+
+    /* Execution status */
+    .exec-status {
+      padding: 24px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+    }
+
+    .exec-step {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 12px 0;
+    }
+
+    .exec-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--border);
+      flex-shrink: 0;
+      transition: background 0.3s;
+    }
+
+    .exec-dot.active {
+      background: var(--accent);
+      animation: pulse 1.5s infinite;
+    }
+
+    .exec-dot.done {
+      background: var(--text-dim);
+    }
+
+    .exec-dot.error {
+      background: var(--error);
+    }
+
+    .exec-text {
+      font-size: 13px;
+      color: var(--text-muted);
+      transition: color 0.3s;
+    }
+
+    .exec-text.active {
+      color: var(--text);
+    }
+
+    .exec-text.done {
+      color: var(--text-dim);
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    /* Result */
+    .result-panel {
+      padding: 32px 24px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      text-align: center;
+    }
+
+    .result-dots {
+      display: flex;
+      justify-content: center;
+      gap: 4px;
+      margin-bottom: 24px;
+    }
+
+    .result-dots .dot {
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: var(--text-dim);
+    }
+
+    .result-title {
+      font-size: 18px;
+      font-weight: 400;
+      margin-bottom: 16px;
+    }
+
+    .result-tx {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-bottom: 8px;
+    }
+
+    .result-tx a {
+      color: var(--text-dim);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
+    .result-tx a:hover {
+      color: var(--text);
+    }
+
+    .result-balances {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      gap: 16px;
+      align-items: center;
+      margin-top: 24px;
+      padding-top: 24px;
+      border-top: 1px solid var(--border);
+    }
+
+    .result-balance {
+      text-align: center;
+    }
+
+    .result-balance-label {
+      font-size: 10px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 4px;
+    }
+
+    .result-balance-val {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 16px;
+    }
+
+    .result-arrow {
+      font-size: 14px;
+      color: var(--text-muted);
+    }
+
+    /* Divider */
+    .divider {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 48px 0;
+    }
+
+    .divider-dots {
+      display: flex;
+      gap: 6px;
+    }
+
+    .divider-dots .dot {
+      width: 3px;
+      height: 3px;
+      border-radius: 50%;
+      background: var(--text-muted);
+    }
+
+    .divider-line {
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
+    /* Error */
+    .error-msg {
+      padding: 16px 20px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-size: 13px;
+      color: var(--text-dim);
+      margin-top: 16px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* Hidden */
+    .hidden {
+      display: none !important;
+    }
+
+    /* Fade in */
+    .fade-in {
+      animation: fadeIn 0.4s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Footer */
+    .footer {
+      margin-top: 80px;
+      padding-top: 32px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .footer-text {
+      font-size: 11px;
+      color: var(--text-muted);
+      letter-spacing: 0.05em;
+    }
+
+    .footer-links {
+      display: flex;
+      gap: 16px;
+    }
+
+    .footer-links a {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-decoration: none;
+    }
+
+    .footer-links a:hover {
+      color: var(--text-dim);
+    }
+
+    /* Network badge */
+    .network-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .network-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--text-muted);
+    }
+
+    .network-dot.live {
+      background: var(--accent);
+    }
   </style>
 </head>
 <body>
-  <div class="container">
-    <!-- Header -->
-    <h1>VAEB</h1>
-    <p class="subtitle">
-      Verified Agent Execution Bundle —
-      <span class="tag tag-mcp">MCP</span>
-      <span class="tag tag-x402">x402</span>
-      <span class="tag tag-8150">ERC-8150</span>
-      <span class="tag tag-8004">ERC-8004</span>
+
+<div class="app">
+
+  <!-- Header -->
+  <header class="header">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 32px;">
+      <div class="logo">VAEB</div>
+      <div class="network-badge">
+        <span class="network-dot" id="networkDot"></span>
+        Base Sepolia
+      </div>
+    </div>
+    <p class="tagline">
+      Tell an agent what you want.<br>
+      It <em>proves</em> it won't cheat,<br>
+      then executes on-chain.
     </p>
+  </header>
 
-    <!-- Architecture -->
-    <div class="detail-panel">
-      <h3>Architecture</h3>
-      <div class="arch-diagram">
-┌──────────────────────────────────────────────────────────────────┐
-│                    ANY AI AGENT / APPLICATION                     │
-│     (Claude, GPT, custom agent SDK, A2A peer, trading bot)       │
-└──────────────────────┬───────────────────────────────────────────┘
-                       │  MCP (JSON-RPC)
-                       ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                      VAEB MCP SERVER                             │
-│  ┌────────────┐ ┌────────────┐ ┌──────────┐ ┌────────┐ ┌──────┐│
-│  │Chain Tools │ │Intent Tools│ │Verify    │ │Pay     │ │Trust ││
-│  │read_balance│ │create      │ │prove     │ │(x402)  │ │(8004)││
-│  │get_price   │ │sign_intent │ │verify    │ │        │ │      ││
-│  │estimate_gas│ │add_action  │ │check     │ │        │ │      ││
-│  └────────────┘ └────────────┘ └──────────┘ └────────┘ └──────┘│
-└────────────┬──────────┬──────────────┬──────────┬───────────────┘
-             │          │              │          │
-    ┌────────▼──┐  ┌────▼─────┐  ┌────▼────┐  ┌─▼──────────┐
-    │Settlement │  │ZK Prover │  │  x402   │  │ERC-8004    │
-    │Rail Router│  │(Groth16) │  │Facilitr │  │Trust Engine│
-    ├───────────┤  └──────────┘  └─────────┘  ├────────────┤
-    │Base │ ETH │                              │Identity    │
-    │Arb  │ Sol │                              │Reputation  │
-    │Poly │     │                              │Validation  │
-    └───────────┘                              └────────────┘</div>
+  <!-- Step 1: Connect Wallet -->
+  <section class="section" id="connectSection">
+    <div class="section-label">01 &mdash; Connect</div>
+    <div class="wallet-bar">
+      <div class="wallet-info">
+        <div class="wallet-dot" id="walletDot"></div>
+        <span class="wallet-address" id="walletAddress">Not connected</span>
+      </div>
+      <button class="btn" id="connectBtn" onclick="connectWallet()">Connect</button>
     </div>
 
-    <!-- Flow Phases -->
-    <h3 style="margin: 2rem 0 1rem; color: #fff;">Execution Flow</h3>
-    <div class="flow" id="flow-phases">
-      <div class="phase pending" id="phase-1">
-        <span class="phase-num">Phase 1</span>
-        <h3>🔍 Discovery</h3>
-        <p>MCP tool discovery + ERC-8004 agent lookup</p>
-        <div class="status" id="status-1"></div>
+    <div class="balances hidden" id="balancesGrid">
+      <div class="balance-card">
+        <div class="balance-label">YOUR WALLET</div>
+        <div class="balance-value"><span id="ownerUsdc">--</span><span class="balance-unit">USDC</span></div>
+        <div class="balance-sub" id="ownerAddr"></div>
       </div>
-      <div class="phase pending" id="phase-2">
-        <span class="phase-num">Phase 2</span>
-        <h3>📋 Intent</h3>
-        <p>Build IntentBundle + derive calldata</p>
-        <div class="status" id="status-2"></div>
+      <div class="balance-card">
+        <div class="balance-label">AGENT WALLET</div>
+        <div class="balance-value"><span id="agentUsdc">--</span><span class="balance-unit">USDC</span></div>
+        <div class="balance-sub" id="agentAddr"></div>
       </div>
-      <div class="phase pending" id="phase-3">
-        <span class="phase-num">Phase 3</span>
-        <h3>✍️ Approval</h3>
-        <p>User signs EIP-712 typed data</p>
-        <div class="status" id="status-3"></div>
+    </div>
+  </section>
+
+  <!-- Step 2: Build Intent -->
+  <section class="section hidden" id="intentSection">
+    <div class="section-label">02 &mdash; Intent</div>
+
+    <div class="form-group">
+      <label class="form-label">Action</label>
+      <select class="input" id="actionType">
+        <option value="TRANSFER">Transfer</option>
+      </select>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Token</label>
+        <select class="input" id="tokenSelect">
+          <option value="USDC">USDC</option>
+        </select>
       </div>
-      <div class="phase pending" id="phase-4">
-        <span class="phase-num">Phase 4</span>
-        <h3>⚡ Execution</h3>
-        <p>x402 pay → ZK proof → on-chain execute</p>
-        <div class="status" id="status-4"></div>
-      </div>
-      <div class="phase pending" id="phase-5">
-        <span class="phase-num">Phase 5</span>
-        <h3>📊 Feedback</h3>
-        <p>Post reputation to ERC-8004</p>
-        <div class="status" id="status-5"></div>
+      <div class="form-group">
+        <label class="form-label">Amount</label>
+        <input class="input input-mono" type="text" id="amount" placeholder="0.00">
       </div>
     </div>
 
-    <div style="margin: 1rem 0;">
-      <button class="btn btn-primary" id="run-demo" onclick="runDemo()">
-        ▶ Run Full Demo
-      </button>
-      <span id="demo-status" style="margin-left: 1rem; font-size: 0.85rem; color: #888;"></span>
+    <div class="form-group">
+      <label class="form-label">Recipient</label>
+      <input class="input input-mono" type="text" id="recipient" placeholder="0x...">
     </div>
 
-    <div class="progress-bar"><div class="progress-fill" id="progress" style="width: 0%;"></div></div>
+    <div style="margin-top: 24px;">
+      <button class="btn btn-primary" id="reviewBtn" onclick="reviewIntent()" disabled>Review Intent</button>
+    </div>
+  </section>
 
-    <!-- Metrics -->
-    <div class="metrics" id="metrics" style="display: none;">
-      <div class="metric">
-        <div class="value" id="m-swap">—</div>
-        <div class="label">Swap Result</div>
+  <!-- Step 3-6: Execution Flow -->
+  <section class="section hidden" id="execSection">
+    <div class="section-label">03 &mdash; Execute</div>
+
+    <!-- Progress dots -->
+    <div class="flow-steps">
+      <div class="step-dot" id="sd1"></div>
+      <div class="step-line" id="sl1"></div>
+      <div class="step-dot" id="sd2"></div>
+      <div class="step-line" id="sl2"></div>
+      <div class="step-dot" id="sd3"></div>
+      <div class="step-line" id="sl3"></div>
+      <div class="step-dot" id="sd4"></div>
+    </div>
+    <div class="step-labels">
+      <span class="step-label" id="slbl1">Review</span>
+      <span class="step-label" id="slbl2">Sign</span>
+      <span class="step-label" id="slbl3">Prove</span>
+      <span class="step-label" id="slbl4">Execute</span>
+    </div>
+
+    <!-- Review -->
+    <div id="reviewPanel" class="hidden" style="margin-top: 32px;">
+      <div class="review-panel">
+        <div class="review-row">
+          <span class="review-key">Action</span>
+          <span class="review-val" id="rvAction"></span>
+        </div>
+        <div class="review-row">
+          <span class="review-key">Token</span>
+          <span class="review-val" id="rvToken"></span>
+        </div>
+        <div class="review-row">
+          <span class="review-key">Amount</span>
+          <span class="review-val" id="rvAmount"></span>
+        </div>
+        <div class="review-row">
+          <span class="review-key">Recipient</span>
+          <span class="review-val" id="rvRecipient"></span>
+        </div>
+        <div class="review-row">
+          <span class="review-key">From</span>
+          <span class="review-val" id="rvFrom"></span>
+        </div>
+        <div class="review-row">
+          <span class="review-key">Nonce</span>
+          <span class="review-val" id="rvNonce"></span>
+        </div>
+        <div class="review-row">
+          <span class="review-key">Expires</span>
+          <span class="review-val" id="rvExpiry"></span>
+        </div>
       </div>
-      <div class="metric">
-        <div class="value" id="m-proof">—</div>
-        <div class="label">Proof Time</div>
-      </div>
-      <div class="metric">
-        <div class="value" id="m-gas">—</div>
-        <div class="label">Gas Cost</div>
-      </div>
-      <div class="metric">
-        <div class="value" id="m-fee">—</div>
-        <div class="label">Service Fee</div>
-      </div>
-      <div class="metric">
-        <div class="value" id="m-rep">—</div>
-        <div class="label">Agent Score</div>
+      <div style="display: flex; gap: 12px;">
+        <button class="btn" onclick="cancelExec()">Cancel</button>
+        <button class="btn btn-primary" id="signBtn" onclick="signAndExecute()">Sign & Execute</button>
       </div>
     </div>
 
-    <!-- Live Log -->
-    <div class="detail-panel" style="margin-top: 1rem;">
-      <h3>Live Execution Log</h3>
-      <div id="log" style="max-height: 400px; overflow-y: auto; font-family: monospace;"></div>
+    <!-- Execution status -->
+    <div id="execStatus" class="hidden" style="margin-top: 32px;">
+      <div class="exec-status">
+        <div class="exec-step">
+          <div class="exec-dot" id="ed1"></div>
+          <span class="exec-text" id="et1">Requesting EIP-712 signature...</span>
+        </div>
+        <div class="exec-step">
+          <div class="exec-dot" id="ed2"></div>
+          <span class="exec-text" id="et2">Generating ZK proof...</span>
+        </div>
+        <div class="exec-step">
+          <div class="exec-dot" id="ed3"></div>
+          <span class="exec-text" id="et3">Submitting on-chain transaction...</span>
+        </div>
+        <div class="exec-step">
+          <div class="exec-dot" id="ed4"></div>
+          <span class="exec-text" id="et4">Waiting for confirmation...</span>
+        </div>
+      </div>
     </div>
-  </div>
 
-  <script>
-    function log(msg, type = 'info') {
-      const el = document.getElementById('log');
-      const time = new Date().toISOString().split('T')[1].split('.')[0];
-      el.innerHTML += `<div class="log-entry"><span class="log-time">${time}</span><span class="log-${type}">${msg}</span></div>`;
-      el.scrollTop = el.scrollHeight;
-    }
+    <!-- Error -->
+    <div id="execError" class="hidden">
+      <div class="error-msg" id="errorText"></div>
+      <div style="margin-top: 16px;">
+        <button class="btn" onclick="resetExec()">Try again</button>
+      </div>
+    </div>
 
-    function setPhase(n, state) {
-      for (let i = 1; i <= 5; i++) {
-        const el = document.getElementById(`phase-${i}`);
-        el.className = 'phase ' + (i < n ? 'completed' : i === n ? 'active' : 'pending');
+    <!-- Result -->
+    <div id="execResult" class="hidden" style="margin-top: 32px;">
+      <div class="result-panel fade-in">
+        <div class="result-dots">
+          <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+          <div class="dot"></div><div class="dot"></div>
+        </div>
+        <div class="result-title">Transaction confirmed</div>
+        <div class="result-tx" id="resultTx"></div>
+        <div class="result-tx">
+          <a id="resultLink" href="#" target="_blank">View on BaseScan</a>
+        </div>
+        <div class="result-balances">
+          <div class="result-balance">
+            <div class="result-balance-label">Before</div>
+            <div class="result-balance-val" id="resultBefore">--</div>
+          </div>
+          <div class="result-arrow">&rarr;</div>
+          <div class="result-balance">
+            <div class="result-balance-label">After</div>
+            <div class="result-balance-val" id="resultAfter">--</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top: 24px;">
+        <button class="btn" onclick="resetAll()">New intent</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <span class="footer-text">Verified Agent Execution Bundle</span>
+    <div class="footer-links">
+      <a href="https://sepolia.basescan.org" target="_blank">BaseScan</a>
+      <a href="https://github.com/vishwanetwork/VAEB" target="_blank">GitHub</a>
+    </div>
+  </footer>
+
+</div>
+
+<!-- ethers.js v6 CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.13.4/ethers.umd.min.js"></script>
+
+<script>
+// ============================================================
+// CONFIG
+// ============================================================
+const CONFIG = {
+  chainId: 84532,
+  chainIdHex: '0x14a34',
+  chainName: 'Base Sepolia',
+  rpcUrl: 'https://sepolia.base.org',
+  explorer: 'https://sepolia.basescan.org',
+  contracts: {
+    AgentWallet: '0x4D7c95c0dd8840CD597DF7D75fb2D7ADc08bA0AA',
+    MockUSDC:    '0xE66D20A340e3F45C55d3A7cfB6b25458d9b0d193',
+    Verifier:    '0xE004ff1dE5009b12c11DE00616Ac7a28437e3475',
+    Adapter:     '0x7206d80BA38EDFd439951339eEAd95E3f301d8C8',
+  },
+  ownerAddress: '0x77A93ecD2437DA60aAFDBF595e74e0317b0d0B47',
+};
+
+// Minimal ABIs (only the functions we need)
+const WALLET_ABI = [
+  'function owner() view returns (address)',
+  'function agent() view returns (address)',
+  'function domainSeparator() view returns (bytes32)',
+  'function isNonceUsed(bytes32 nonce) view returns (bool)',
+  'function executeWithProof(bytes proof, bytes signature, tuple(bytes32 commitment, uint256 chainId, address signerAddress, bytes32 multicallDataHash, bytes32 nonce, uint256 expiry) publicInputs, tuple(address target, uint256 value, bytes data)[] calls)',
+  'function executeDirectly(bytes signature, bytes32 nonce, uint256 expiry, tuple(address target, uint256 value, bytes data)[] calls)',
+  'event IntentExecuted(bytes32 indexed intentId, address indexed signer, bytes32 nonce, uint256 callCount, uint256 gasUsed)',
+];
+
+const ERC20_ABI = [
+  'function balanceOf(address) view returns (uint256)',
+  'function decimals() view returns (uint8)',
+  'function symbol() view returns (string)',
+  'function transfer(address to, uint256 amount) returns (bool)',
+  'function approve(address spender, uint256 amount) returns (bool)',
+];
+
+// ============================================================
+// STATE
+// ============================================================
+let provider = null;
+let signer = null;
+let userAddress = null;
+let walletContract = null;
+let usdcContract = null;
+let currentIntent = null;
+
+// ============================================================
+// WALLET CONNECTION
+// ============================================================
+async function connectWallet() {
+  if (!window.ethereum) {
+    alert('Please install MetaMask to use this app.');
+    return;
+  }
+
+  try {
+    const btn = document.getElementById('connectBtn');
+    btn.textContent = '...';
+    btn.disabled = true;
+
+    // Request accounts
+    const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+    userAddress = accounts[0];
+
+    // Check/switch network
+    const chainId = await window.ethereum.request({ method: 'eth_chainId' });
+    if (chainId !== CONFIG.chainIdHex) {
+      try {
+        await window.ethereum.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: CONFIG.chainIdHex }],
+        });
+      } catch (switchError) {
+        if (switchError.code === 4902) {
+          await window.ethereum.request({
+            method: 'wallet_addEthereumChain',
+            params: [{
+              chainId: CONFIG.chainIdHex,
+              chainName: CONFIG.chainName,
+              rpcUrls: [CONFIG.rpcUrl],
+              blockExplorerUrls: [CONFIG.explorer],
+              nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
+            }],
+          });
+        } else {
+          throw switchError;
+        }
       }
     }
 
-    function setStatus(n, text, ok = true) {
-      document.getElementById(`status-${n}`).innerHTML = `<span class="${ok ? 'status-ok' : 'status-running'}">${text}</span>`;
+    // Setup providers and contracts
+    provider = new ethers.BrowserProvider(window.ethereum);
+    signer = await provider.getSigner();
+    userAddress = await signer.getAddress();
+
+    walletContract = new ethers.Contract(CONFIG.contracts.AgentWallet, WALLET_ABI, provider);
+    usdcContract = new ethers.Contract(CONFIG.contracts.MockUSDC, ERC20_ABI, provider);
+
+    // Update UI
+    document.getElementById('walletDot').classList.add('connected');
+    document.getElementById('networkDot').classList.add('live');
+    document.getElementById('walletAddress').textContent = truncAddr(userAddress);
+    btn.textContent = 'Connected';
+
+    // Load balances
+    await loadBalances();
+
+    // Show intent section
+    document.getElementById('balancesGrid').classList.remove('hidden');
+    document.getElementById('intentSection').classList.remove('hidden');
+    document.getElementById('intentSection').classList.add('fade-in');
+    enableReviewBtn();
+
+    // Listen for account/chain changes
+    window.ethereum.on('accountsChanged', () => location.reload());
+    window.ethereum.on('chainChanged', () => location.reload());
+
+  } catch (err) {
+    console.error('Connection failed:', err);
+    const btn = document.getElementById('connectBtn');
+    btn.textContent = 'Connect';
+    btn.disabled = false;
+  }
+}
+
+async function loadBalances() {
+  try {
+    const [ownerBal, agentBal] = await Promise.all([
+      usdcContract.balanceOf(userAddress),
+      usdcContract.balanceOf(CONFIG.contracts.AgentWallet),
+    ]);
+
+    document.getElementById('ownerUsdc').textContent = ethers.formatUnits(ownerBal, 6);
+    document.getElementById('agentUsdc').textContent = ethers.formatUnits(agentBal, 6);
+    document.getElementById('ownerAddr').textContent = truncAddr(userAddress);
+    document.getElementById('agentAddr').textContent = truncAddr(CONFIG.contracts.AgentWallet);
+  } catch (err) {
+    console.error('Balance load failed:', err);
+  }
+}
+
+// ============================================================
+// INTENT BUILDING
+// ============================================================
+function enableReviewBtn() {
+  const amount = document.getElementById('amount');
+  const recipient = document.getElementById('recipient');
+  const btn = document.getElementById('reviewBtn');
+
+  const check = () => {
+    const hasAmount = amount.value.trim() !== '' && parseFloat(amount.value) > 0;
+    const hasRecipient = recipient.value.trim().length === 42 && recipient.value.startsWith('0x');
+    btn.disabled = !(hasAmount && hasRecipient);
+  };
+
+  amount.addEventListener('input', check);
+  recipient.addEventListener('input', check);
+}
+
+function reviewIntent() {
+  const actionType = document.getElementById('actionType').value;
+  const token = document.getElementById('tokenSelect').value;
+  const amount = document.getElementById('amount').value.trim();
+  const recipient = document.getElementById('recipient').value.trim();
+
+  // Generate nonce (31 bytes to fit in BN254 field)
+  const randomBytes = new Uint8Array(31);
+  crypto.getRandomValues(randomBytes);
+  const nonce = '0x00' + Array.from(randomBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+
+  const expiry = Math.floor(Date.now() / 1000) + 600; // 10 minutes
+
+  currentIntent = {
+    actionType, token, amount, recipient, nonce, expiry,
+    tokenAddress: CONFIG.contracts.MockUSDC,
+    walletAddress: CONFIG.contracts.AgentWallet,
+  };
+
+  // Show execution section
+  document.getElementById('execSection').classList.remove('hidden');
+  document.getElementById('execSection').classList.add('fade-in');
+  document.getElementById('reviewPanel').classList.remove('hidden');
+  document.getElementById('execStatus').classList.add('hidden');
+  document.getElementById('execResult').classList.add('hidden');
+  document.getElementById('execError').classList.add('hidden');
+
+  // Fill review
+  document.getElementById('rvAction').textContent = actionType;
+  document.getElementById('rvToken').textContent = token;
+  document.getElementById('rvAmount').textContent = amount + ' ' + token;
+  document.getElementById('rvRecipient').textContent = truncAddr(recipient);
+  document.getElementById('rvFrom').textContent = truncAddr(CONFIG.contracts.AgentWallet);
+  document.getElementById('rvNonce').textContent = nonce.slice(0, 14) + '...';
+  document.getElementById('rvExpiry').textContent = new Date(expiry * 1000).toLocaleTimeString();
+
+  // Set step 1 active
+  setStep(1);
+
+  // Scroll to exec section
+  document.getElementById('execSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// ============================================================
+// SIGN & EXECUTE
+// ============================================================
+async function signAndExecute() {
+  const intent = currentIntent;
+  if (!intent) return;
+
+  document.getElementById('reviewPanel').classList.add('hidden');
+  document.getElementById('execStatus').classList.remove('hidden');
+  document.getElementById('execError').classList.add('hidden');
+  document.getElementById('signBtn').disabled = true;
+
+  try {
+    // ── Step 1: Sign ──────────────────────────────────
+    setStep(2);
+    setExecStep(1, 'active');
+
+    const amountWei = ethers.parseUnits(intent.amount, 6);
+
+    // Derive calldata: ERC20.transfer(recipient, amount)
+    const erc20Iface = new ethers.Interface(['function transfer(address to, uint256 amount) returns (bool)']);
+    const transferCalldata = erc20Iface.encodeFunctionData('transfer', [intent.recipient, amountWei]);
+
+    const calls = [{
+      target: intent.tokenAddress,
+      value: 0n,
+      data: transferCalldata,
+    }];
+
+    // Compute multicallDataHash
+    const coder = ethers.AbiCoder.defaultAbiCoder();
+    const encodedCalls = coder.encode(
+      ['tuple(address target, uint256 value, bytes data)[]'],
+      [calls]
+    );
+    const multicallDataHash = ethers.keccak256(encodedCalls);
+
+    // Get domain separator from contract
+    const domainSeparator = await walletContract.domainSeparator();
+
+    // For the frontend demo, we use executeDirectly (signature only, no ZK proof)
+    // This is simpler and still demonstrates the full flow.
+    // The ZK path (executeWithProof) requires Poseidon hashing + snarkjs in browser,
+    // which would need ~5MB of WASM. For demo we show the signature flow.
+    //
+    // The commitment for signing is the keccak256 of the calls + nonce + expiry
+    const commitment = ethers.keccak256(
+      coder.encode(
+        ['bytes32', 'uint256', 'tuple(address target, uint256 value, bytes data)[]'],
+        [intent.nonce, intent.expiry, calls]
+      )
+    );
+
+    // EIP-712 digest: \x19\x01 + domainSeparator + commitment
+    const digest = ethers.keccak256(
+      ethers.solidityPacked(
+        ['bytes1', 'bytes1', 'bytes32', 'bytes32'],
+        ['0x19', '0x01', domainSeparator, commitment]
+      )
+    );
+
+    // Sign the raw digest (not EIP-712 typed, since the contract expects raw sig over commitment)
+    const signature = await signer.signMessage(ethers.getBytes(digest));
+
+    setExecStep(1, 'done');
+    document.getElementById('et1').textContent = 'Signature obtained';
+
+    // ── Step 2: Generate proof ────────────────────────
+    setStep(3);
+    setExecStep(2, 'active');
+
+    // For executeDirectly, we skip ZK proof generation
+    // In production, this would call the prover service
+    await sleep(800); // Brief pause for UX
+
+    setExecStep(2, 'done');
+    document.getElementById('et2').textContent = 'Using direct execution path';
+
+    // ── Step 3: Submit transaction ────────────────────
+    setStep(3);
+    setExecStep(3, 'active');
+
+    // We need the agent's private key to submit (agent calls executeDirectly)
+    // For the demo, we use a read-only provider with the agent key
+    const agentKey = '0x003468c10bc1e8e477218d717fe1ddc0c13a08a4c188cde358bf9c64839fff4b';
+    const rpcProvider = new ethers.JsonRpcProvider(CONFIG.rpcUrl);
+    const agentSigner = new ethers.Wallet(agentKey, rpcProvider);
+    const walletWithAgent = new ethers.Contract(CONFIG.contracts.AgentWallet, WALLET_ABI, agentSigner);
+
+    // Save before-balance
+    const beforeBal = await usdcContract.balanceOf(CONFIG.contracts.AgentWallet);
+
+    const tx = await walletWithAgent.executeDirectly(
+      signature,
+      intent.nonce,
+      intent.expiry,
+      calls,
+      { gasLimit: 300000 }
+    );
+
+    setExecStep(3, 'done');
+    document.getElementById('et3').textContent = 'Transaction submitted';
+
+    // ── Step 4: Wait for confirmation ─────────────────
+    setStep(4);
+    setExecStep(4, 'active');
+
+    const receipt = await tx.wait();
+
+    setExecStep(4, 'done');
+    document.getElementById('et4').textContent = 'Confirmed in block ' + receipt.blockNumber;
+
+    // ── Show result ───────────────────────────────────
+    await sleep(500);
+
+    // Load after-balance
+    const afterBal = await usdcContract.balanceOf(CONFIG.contracts.AgentWallet);
+
+    document.getElementById('resultTx').textContent = truncAddr(tx.hash, 16);
+    document.getElementById('resultLink').href = CONFIG.explorer + '/tx/' + tx.hash;
+    document.getElementById('resultBefore').textContent = ethers.formatUnits(beforeBal, 6) + ' USDC';
+    document.getElementById('resultAfter').textContent = ethers.formatUnits(afterBal, 6) + ' USDC';
+
+    document.getElementById('execStatus').classList.add('hidden');
+    document.getElementById('execResult').classList.remove('hidden');
+
+    // Refresh main balances
+    await loadBalances();
+
+  } catch (err) {
+    console.error('Execution failed:', err);
+    document.getElementById('execStatus').classList.add('hidden');
+    document.getElementById('execError').classList.remove('hidden');
+    document.getElementById('errorText').textContent = err.reason || err.message || 'Transaction failed';
+  }
+}
+
+// ============================================================
+// UI HELPERS
+// ============================================================
+function setStep(n) {
+  for (let i = 1; i <= 4; i++) {
+    const dot = document.getElementById('sd' + i);
+    const label = document.getElementById('slbl' + i);
+    dot.className = 'step-dot' + (i < n ? ' done' : i === n ? ' active' : '');
+    label.className = 'step-label' + (i < n ? ' done' : i === n ? ' active' : '');
+    if (i < 4) {
+      document.getElementById('sl' + i).className = 'step-line' + (i < n ? ' done' : '');
     }
+  }
+}
 
-    function setProgress(pct) {
-      document.getElementById('progress').style.width = pct + '%';
-    }
+function setExecStep(n, state) {
+  document.getElementById('ed' + n).className = 'exec-dot ' + state;
+  document.getElementById('et' + n).className = 'exec-text ' + state;
+}
 
-    async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function cancelExec() {
+  document.getElementById('execSection').classList.add('hidden');
+  currentIntent = null;
+}
 
-    async function runDemo() {
-      const btn = document.getElementById('run-demo');
-      btn.disabled = true;
-      document.getElementById('log').innerHTML = '';
-      document.getElementById('metrics').style.display = 'none';
+function resetExec() {
+  document.getElementById('execError').classList.add('hidden');
+  document.getElementById('execStatus').classList.add('hidden');
+  document.getElementById('reviewPanel').classList.remove('hidden');
+  document.getElementById('signBtn').disabled = false;
+  setStep(1);
+}
 
-      // Phase 1: Discovery
-      setPhase(1, 'active');
-      setStatus(1, 'Discovering...', false);
-      log('MCP: tools/list → VAEB MCP Server', 'info');
-      await sleep(500);
-      log('Available tools: create_intent, execute_intent, read_balance, discover_agents, ...', 'info');
-      await sleep(300);
-      log('read_balance({ chain: "base_sepolia", token: "USDC" }) → 500.00 USDC', 'ok');
-      await sleep(400);
-      log('discover_agents({ chain: "base", operation: "swap", min_reputation: 7.0 })', 'info');
-      await sleep(600);
-      log('→ Recommended: Agent #42 (score: 9.2, 1847 feedbacks, 100% validation rate)', 'ok');
-      setStatus(1, '✓ Agent #42 selected');
-      setProgress(20);
+function resetAll() {
+  document.getElementById('execSection').classList.add('hidden');
+  document.getElementById('execResult').classList.add('hidden');
+  document.getElementById('amount').value = '';
+  document.getElementById('recipient').value = '';
+  document.getElementById('reviewBtn').disabled = true;
+  currentIntent = null;
+  loadBalances();
+}
 
-      // Phase 2: Intent
-      await sleep(400);
-      setPhase(2, 'active');
-      setStatus(2, 'Building intent...', false);
-      log('create_intent({ actions: [{ type: "SWAP", from: "USDC", to: "ETH", amount: 100 }] })', 'info');
-      await sleep(700);
-      log('Settlement Router → Base Sepolia (cheapest gas, sufficient liquidity)', 'info');
-      await sleep(300);
-      log('Derived calldata: USDC.approve() + Router.exactInputSingle()', 'info');
-      await sleep(400);
-      log('IntentBundle constructed. ID: 0x305f7f05...', 'ok');
-      log('Human readable: "Swap 100 USDC → ~0.0308 ETH on Uniswap (Base)"', 'ok');
-      setStatus(2, '✓ Intent created');
-      setProgress(40);
+function truncAddr(addr, len = 6) {
+  if (!addr) return '';
+  if (addr.length <= len * 2 + 2) return addr;
+  return addr.slice(0, len + 2) + '...' + addr.slice(-len);
+}
 
-      // Phase 3: Approval
-      await sleep(400);
-      setPhase(3, 'active');
-      setStatus(3, 'Awaiting signature...', false);
-      log('Agent presents to user: "Swap 100 USDC for ~0.0308 ETH on Base. Service fee: $0.02. Approve?"', 'warn');
-      await sleep(1000);
-      log('User signs EIP-712 IntentBundle via wallet', 'info');
-      await sleep(500);
-      log('Signature: 0x5d9c296c...7bae771c ✓', 'ok');
-      setStatus(3, '✓ Signed');
-      setProgress(55);
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+</script>
 
-      // Phase 4: Execution
-      await sleep(400);
-      setPhase(4, 'active');
-      setStatus(4, 'Executing...', false);
-      log('execute_intent({ intent_id: "0x305f...", signature: "0x5d9c..." })', 'info');
-      await sleep(300);
-      log('[x402] HTTP 402 → PAYMENT-REQUIRED { scheme: "exact", amount: 20000, token: "USDC" }', 'warn');
-      await sleep(400);
-      log('[x402] Agent signs payment → X-PAYMENT header → verify + settle → 0.02 USDC ✓', 'ok');
-      await sleep(300);
-      log('[ZK Prover] Generating Groth16 proof...', 'warn');
-
-      // Animate proof generation
-      const proofStart = Date.now();
-      for (let i = 0; i < 6; i++) {
-        await sleep(400);
-        log(`[ZK Prover] Computing... ${((i + 1) * 16)}%`, 'info');
-      }
-      const proofTime = ((Date.now() - proofStart) / 1000).toFixed(1);
-      log(`[ZK Prover] Proof generated in ${proofTime}s ✓`, 'ok');
-
-      await sleep(300);
-      log('[On-Chain] AgentWallet.executeWithProof(proof, signature, publicInputs, calls)', 'info');
-      await sleep(400);
-      log('  1. ZK verifier: proof matches public inputs ✓', 'ok');
-      await sleep(200);
-      log('  2. EIP-712 signature: owner verified ✓', 'ok');
-      await sleep(200);
-      log('  3. Nonce: unused + not expired ✓', 'ok');
-      await sleep(200);
-      log('  4. Atomic execute: USDC.approve + Router.swap → 0.03082 ETH ✓', 'ok');
-      await sleep(200);
-      log('  5. Nonce marked used ✓', 'ok');
-      log('Transaction confirmed! Gas: 245,000 (~$0.0011)', 'ok');
-      setStatus(4, '✓ Executed');
-      setProgress(85);
-
-      // Phase 5: Feedback
-      await sleep(400);
-      setPhase(5, 'active');
-      setStatus(5, 'Posting feedback...', false);
-      log('Computing execution quality score...', 'info');
-      await sleep(500);
-      log(`  proof_time: ${proofTime}s → +2 | gas: 98th pct → +2 | slippage: 0.3% → +2`, 'info');
-      log('  Composite score: 9 / 10', 'ok');
-      await sleep(400);
-      log('ReputationRegistry.giveFeedback(agentId: 42, score: 9, tags: ["swap"]) ✓', 'ok');
-      await sleep(300);
-      log('ValidationRegistry.validationRequest() → independent re-verification queued', 'info');
-      log('Agent 42: feedbacks 1847→1848 | score 9.2 maintained | validations 412→413', 'ok');
-      setStatus(5, '✓ Reputation updated');
-      setProgress(100);
-
-      // Show metrics
-      document.getElementById('metrics').style.display = 'grid';
-      document.getElementById('m-swap').textContent = '100 USDC → 0.0308 ETH';
-      document.getElementById('m-proof').textContent = proofTime + 's';
-      document.getElementById('m-gas').textContent = '$0.001';
-      document.getElementById('m-fee').textContent = '$0.02';
-      document.getElementById('m-rep').textContent = '9.2 / 10';
-
-      document.getElementById('demo-status').textContent = 'Demo complete!';
-      btn.disabled = false;
-    }
-  </script>
 </body>
 </html>
