@@ -25,6 +25,58 @@ import {
 } from "@vaeb/intent-sdk";
 import { ContractFactory, ProviderFactory, getContract, getProvider } from "./deps";
 
+// ─── EIP-712 type hashes (must match AgentWallet.sol exactly) ────────────────
+
+const ACTION_ENTRY_TYPEHASH = ethers.keccak256(
+  ethers.toUtf8Bytes("ActionEntry(string actionType,address token,address to,uint256 amount)")
+);
+
+const INTENT_BUNDLE_TYPEHASH = ethers.keccak256(
+  ethers.toUtf8Bytes(
+    "IntentBundle(string version,uint256 chainId,bytes32 nonce,uint256 expiry,address payer,ActionEntry[] actions)ActionEntry(string actionType,address token,address to,uint256 amount)"
+  )
+);
+
+/**
+ * Compute the EIP-712 struct hash for an IntentBundle.
+ * This matches what signIntentBundle() signs, and what the contract's
+ * executeWithProof() expects: recover(_hashTypedDataV4(commitment), sig) == owner
+ */
+function computeEIP712StructHash(bundle: IntentBundle): string {
+  const actionHashes = bundle.actions.map((action) =>
+    ethers.keccak256(
+      ethers.AbiCoder.defaultAbiCoder().encode(
+        ["bytes32", "bytes32", "address", "address", "uint256"],
+        [
+          ACTION_ENTRY_TYPEHASH,
+          ethers.keccak256(ethers.toUtf8Bytes(action.actionType)),
+          action.token,
+          action.to,
+          action.amount,
+        ]
+      )
+    )
+  );
+
+  // EIP-712 array of structs: keccak256(concat of element struct hashes)
+  const actionsArrayHash = ethers.keccak256(ethers.concat(actionHashes));
+
+  return ethers.keccak256(
+    ethers.AbiCoder.defaultAbiCoder().encode(
+      ["bytes32", "bytes32", "uint256", "bytes32", "uint256", "address", "bytes32"],
+      [
+        INTENT_BUNDLE_TYPEHASH,
+        ethers.keccak256(ethers.toUtf8Bytes(bundle.version)),
+        bundle.chainId,
+        bundle.nonce,
+        bundle.expiry,
+        bundle.payer,
+        actionsArrayHash,
+      ]
+    )
+  );
+}
+
 type Config = {
   defaultChain: string;
   supportedChains: string[];
@@ -33,6 +85,7 @@ type Config = {
   requireManualApproval: boolean;
   rpcUrl?: string;
   chainId?: number;
+  ownerAddress?: string;
   providerFactory?: ProviderFactory;
   contractFactory?: ContractFactory;
   fetchFn?: typeof fetch;
@@ -199,17 +252,20 @@ async function executeIntent(args: any, config: Config) {
     const x402Fee = DEFAULTS.SERVICE_FEE_USDC;
 
     // Step 3: Generate ZK proof
+    // commitment = EIP-712 IntentBundle struct hash (matches what signIntentBundle signed)
+    const commitment = computeEIP712StructHash(stored.bundle);
     const proofResult: any = await generateProof(
       stored.bundle,
       stored.derivedCalldata,
-      signature,
+      commitment,
       config
     );
 
-    // Step 3: Submit to AgentWallet on-chain
+    // Step 4: Submit to AgentWallet on-chain
     const txResult = await submitToChain(
       stored.bundle,
       stored.derivedCalldata,
+      commitment,
       proofResult,
       signature,
       stored.chainKey,
@@ -285,63 +341,52 @@ async function cancelIntent(args: any, _config: Config) {
 async function generateProof(
   bundle: IntentBundle,
   derivedCalldata: DerivedCalldata,
-  _signature: string,
+  commitment: string,
   config: Config
 ) {
   const fetchFn = config.fetchFn || fetch;
-  try {
-    // Try remote prover service first
-    const response = await fetchFn(`${config.proverEndpoint}/prove`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        intentBundle: bundle,
-        derivedCalldata,
-        publicInputs: {
-          commitment: computeIntentId(bundle),
-          chainId: bundle.chainId,
-          signerAddress: bundle.payer,
-          multicallDataHash: derivedCalldata.multicallDataHash,
-          nonce: bundle.nonce,
-          expiry: bundle.expiry,
-        },
-      }),
-    });
+  const signerAddress = config.ownerAddress || bundle.payer;
 
-    if (response.ok) {
-      return await response.json();
-    }
-  } catch {
-    // Prover service unavailable — use local simulated proof
+  // The circuit constraint requires derivedValues[i] == actionAmounts[i].
+  // For ERC-20 transfers the on-chain call.value is 0, so we override it
+  // here with the token amount so the prover can satisfy the constraint.
+  const proverCalls = derivedCalldata.calls.map((c, i) => ({
+    target: c.target,
+    value: i < bundle.actions.length ? bundle.actions[i].amount.toString() : "0",
+    data: c.data,
+  }));
+
+  const response = await fetchFn(`${config.proverEndpoint}/prove`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      intentBundle: {
+        payer: bundle.payer,
+        actions: bundle.actions.map((a) => ({
+          actionType: a.actionType,
+          token: a.token,
+          to: a.to,
+          amount: a.amount.toString(),
+        })),
+      },
+      derivedCalldata: { calls: proverCalls },
+      publicInputs: {
+        commitment,
+        chainId: bundle.chainId,
+        signerAddress,
+        multicallDataHash: derivedCalldata.multicallDataHash,
+        nonce: bundle.nonce,
+        expiry: bundle.expiry,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Prover service error ${response.status}: ${body}`);
   }
 
-  // Fallback: Generate simulated proof locally
-  const now = config.now || Date.now;
-  const startTime = now();
-  const delayMs = config.proofDelayMs ?? 500;
-  if (delayMs > 0) {
-    await new Promise((r) => setTimeout(r, delayMs)); // Simulate computation
-  }
-
-  const proofSeed = ethers.keccak256(
-    ethers.AbiCoder.defaultAbiCoder().encode(
-      ["bytes32", "uint256"],
-      [computeIntentId(bundle), bundle.chainId]
-    )
-  );
-
-  return {
-    proof: proofSeed, // Simplified for demo
-    publicSignals: [
-      computeIntentId(bundle),
-      bundle.chainId.toString(),
-      bundle.payer,
-      derivedCalldata.multicallDataHash,
-      bundle.nonce,
-      bundle.expiry.toString(),
-    ],
-    proofTimeMs: (config.now || Date.now)() - startTime,
-  };
+  return await response.json();
 }
 
 // ─── AgentWallet ABI (minimal) ──────────────────────────────────
@@ -356,6 +401,7 @@ const AGENT_WALLET_ABI = [
 async function submitToChain(
   bundle: IntentBundle,
   derivedCalldata: DerivedCalldata,
+  commitment: string,
   proofResult: any,
   signature: string,
   chainKey: string,
@@ -378,9 +424,9 @@ async function submitToChain(
   );
 
   const publicInputs = {
-    commitment: computeIntentId(bundle),
+    commitment,
     chainId: bundle.chainId,
-    signerAddress: bundle.payer,
+    signerAddress: config.ownerAddress || bundle.payer,
     multicallDataHash: derivedCalldata.multicallDataHash,
     nonce: bundle.nonce,
     expiry: bundle.expiry,

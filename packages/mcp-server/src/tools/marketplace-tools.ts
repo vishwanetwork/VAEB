@@ -358,6 +358,9 @@ async function handleHireHuman(
 
   const reviewId = ethers.hexlify(ethers.randomBytes(16));
 
+  const payerAddr = config.contracts?.AgentWallet ?? "";
+  const chainId = config.chainId || bundle.chainId;
+
   intentStore.set(reviewId, {
     nonce: bundle.nonce,
     expiry: bundle.expiry,
@@ -368,6 +371,8 @@ async function handleHireHuman(
     amount: args.amount,
     task: args.task_description,
     recipient: human.address,
+    payer: payerAddr,
+    token: usdcAddress,
   });
 
   return {
@@ -381,21 +386,40 @@ async function handleHireHuman(
         domain: {
           name: "VAEB AgentWallet",
           version: "1",
-          chainId: config.chainId || bundle.chainId,
-          verifyingContract: config.contracts?.AgentWallet,
+          chainId,
+          verifyingContract: payerAddr,
         },
+        // User signs an IntentBundle so MetaMask shows the actual transfer details,
+        // not opaque bytes. Matches INTENT_BUNDLE_TYPEHASH in AgentWallet.sol.
         types: {
-          DirectExecution: [
-            { name: "nonce", type: "bytes32" },
-            { name: "expiry", type: "uint256" },
-            { name: "callsHash", type: "bytes32" },
+          IntentBundle: [
+            { name: "version",  type: "string" },
+            { name: "chainId",  type: "uint256" },
+            { name: "nonce",    type: "bytes32" },
+            { name: "expiry",   type: "uint256" },
+            { name: "payer",    type: "address" },
+            { name: "actions",  type: "ActionEntry[]" },
+          ],
+          ActionEntry: [
+            { name: "actionType", type: "string" },
+            { name: "token",      type: "address" },
+            { name: "to",         type: "address" },
+            { name: "amount",     type: "uint256" },
           ],
         },
-        primaryType: "DirectExecution",
+        primaryType: "IntentBundle",
         message: {
+          version: "1",
+          chainId,
           nonce: bundle.nonce,
           expiry: bundle.expiry,
-          callsHash,
+          payer: payerAddr,
+          actions: [{
+            actionType: "TRANSFER",
+            token: usdcAddress,
+            to: human.address,
+            amount: amountInBaseUnits.toString(),
+          }],
         },
       },
       humanName: human.name,
@@ -500,154 +524,122 @@ async function handleExecutePayment(
     detail: `${balanceBefore} USDC`,
   });
 
-  // ── Step 3: Generate ZK proof via prover service ──────────
+  // ── Step 3: Build commitment + Poseidon inputs ────────────
   stepStart = Date.now();
-  let proofResult: { proof: string; publicSignals: string[]; mode: string } | null = null;
-  let useZkPath = false;
-
   const proverEndpoint = config.proverEndpoint || "http://localhost:3001";
   const fetchFn = config.fetchFn || fetch;
-  const payerAddress = config.ownerAddress || config.contracts.AgentWallet;
   const chainId = config.chainId || 84532;
-  let poseidonMulticallHashHex: string | null = null;
+  const signerAddress = config.ownerAddress || config.contracts.AgentWallet;
+  const tokenAddress = intent.token || config.contracts?.MockUSDC || intent.calls[0].target;
+  const amountBaseUnits = ethers.parseUnits(intent.amount, 6);
 
-  try {
-    // Compute public inputs via Poseidon — must match IntentVerifier.circom exactly.
-    // For ERC20 TRANSFER: actionAmount=0 (circuit checks derivedValues==actionAmounts,
-    // and derivedValues is the ETH call value which is always 0 for ERC20).
-    const [commitment, multicallDataHash] = await Promise.all([
-      computePoseidonCommitment(
+  // commitment = IntentBundle EIP-712 struct hash (what the user signed).
+  // executeWithProof() verifies: recover(_hashTypedDataV4(commitment), sig) == owner
+  const commitment = computeIntentBundleStructHash(
+    chainId,
+    intent.nonce,
+    intent.expiry,
+    intent.payer,
+    tokenAddress,
+    intent.recipient,
+    amountBaseUnits,
+  );
+
+  // Poseidon hashes for the ZK circuit — match demo-zkproof.js exactly:
+  //   actionAmounts[0]  = tokenAmount  (not ETH call value)
+  //   derivedValues[0]  = tokenAmount  (circuit constraint: derivedValues[i*2] == actionAmounts[i])
+  const [poseidonCommitment, poseidonMulticallHash] = await Promise.all([
+    computePoseidonCommitment(
+      chainId,
+      intent.nonce,
+      intent.expiry,
+      intent.payer,
+      tokenAddress,
+      intent.recipient,
+      amountBaseUnits,
+    ),
+    computePoseidonMulticallHash(
+      intent.calls,
+      [amountBaseUnits],  // derivedValues[0] = token amount
+    ),
+  ]);
+
+  const publicInputsStruct = {
+    commitment,                                         // IntentBundle struct hash
+    chainId,
+    signerAddress,
+    multicallDataHash: ethers.toBeHex(poseidonMulticallHash, 32),
+    nonce: intent.nonce,
+    expiry: intent.expiry,
+  };
+
+  // ── Step 3: Generate ZK proof via prover service ──────────
+  const proverResponse = await fetchFn(`${proverEndpoint}/prove`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      intentBundle: {
+        payer: intent.payer,
+        actions: [{
+          actionType: "TRANSFER",
+          token: tokenAddress,
+          to: intent.recipient,
+          amount: amountBaseUnits.toString(),
+        }],
+      },
+      derivedCalldata: {
+        // Pass amountBaseUnits as value so derivedValues[0] == actionAmounts[0] in circuit
+        calls: intent.calls.map((c, i) => ({
+          target: c.target,
+          value: i === 0 ? amountBaseUnits.toString() : "0",
+          data: c.data,
+        })),
+      },
+      publicInputs: {
+        commitment: ethers.toBeHex(poseidonCommitment, 32),
         chainId,
-        intent.nonce,
-        intent.expiry,
-        payerAddress,
-        config.contracts?.MockUSDC ?? intent.calls[0].target,
-        intent.recipient,
-      ),
-      computePoseidonMulticallHash(intent.calls),
-    ]);
-    poseidonMulticallHashHex = ethers.toBeHex(multicallDataHash, 32);
+        signerAddress,
+        multicallDataHash: ethers.toBeHex(poseidonMulticallHash, 32),
+        nonce: intent.nonce,
+        expiry: intent.expiry,
+      },
+    }),
+  });
 
-    const response = await fetchFn(`${proverEndpoint}/prove`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        intentBundle: {
-          payer: payerAddress,
-          actions: [{
-            actionType: "TRANSFER",
-            token: config.contracts?.MockUSDC ?? intent.calls[0].target,
-            to: intent.recipient,
-            amount: "0",   // ERC20: ETH value=0, actual amount is in calldata
-          }],
-        },
-        derivedCalldata: {
-          calls: intent.calls.map(c => ({
-            target: c.target,
-            value: c.value.toString(),
-            data: c.data,
-          })),
-        },
-        publicInputs: {
-          commitment: ethers.toBeHex(commitment, 32),
-          chainId,
-          signerAddress: payerAddress,
-          multicallDataHash: ethers.toBeHex(multicallDataHash, 32),
-          nonce: intent.nonce,
-          expiry: intent.expiry,
-        },
-      }),
-    });
-
-    if (response.ok) {
-      proofResult = await response.json() as { proof: string; publicSignals: string[]; mode: string };
-      useZkPath = true;
-      steps.push({
-        step: "prove_intent",
-        status: "success",
-        durationMs: Date.now() - stepStart,
-        detail: `Groth16 proof generated (${proofResult!.mode} mode, ${Date.now() - stepStart}ms)`,
-      });
-    } else {
-      steps.push({
-        step: "prove_intent",
-        status: "fallback",
-        durationMs: Date.now() - stepStart,
-        detail: `Prover returned ${response.status}, falling back to executeDirectly`,
-      });
-    }
-  } catch {
-    steps.push({
-      step: "prove_intent",
-      status: "fallback",
-      durationMs: Date.now() - stepStart,
-      detail: "Prover service unavailable, falling back to executeDirectly",
-    });
+  if (!proverResponse.ok) {
+    const body = await proverResponse.text().catch(() => "");
+    throw new Error(`Prover service error ${proverResponse.status}: ${body}`);
   }
 
-  // ── Step 4: Execute on-chain ──────────────────────────────
+  const proofResult = await proverResponse.json() as { proof: string; publicSignals: string[]; mode: string };
+  const proofBytes = proofResult.proof;
+  const proofMode = proofResult.mode;
+
+  steps.push({
+    step: "prove_intent",
+    status: "success",
+    durationMs: Date.now() - stepStart,
+    detail: `Groth16 proof generated (${proofMode} mode, ${Date.now() - stepStart}ms)`,
+  });
+
+  // ── Step 4: Execute on-chain via executeWithProof ─────────
   stepStart = Date.now();
   let tx: any;
 
-  if (useZkPath && proofResult) {
-    // Full ERC-8150 path: executeWithProof()
-    //
-    // The contract checks: ECDSA.recover(_hashTypedDataV4(commitment), sig) == owner
-    // The user signed DirectExecution{nonce,expiry,callsHash} via EIP-712, so the
-    // structHash they signed is keccak256(typeHash ++ nonce ++ expiry ++ callsHash).
-    // We pass that as `commitment` so the signature check passes.
-    // MockZKVerifier (deployed on this contract) always returns true, so the proof
-    // bytes are accepted regardless of the commitment value.
-    const DIRECT_EXECUTION_TYPEHASH = ethers.keccak256(
-      ethers.toUtf8Bytes("DirectExecution(bytes32 nonce,uint256 expiry,bytes32 callsHash)")
-    );
-    const directExecStructHash = ethers.keccak256(
-      ethers.AbiCoder.defaultAbiCoder().encode(
-        ["bytes32", "bytes32", "uint256", "bytes32"],
-        [DIRECT_EXECUTION_TYPEHASH, intent.nonce, intent.expiry, intent.callsHash]
-      )
-    );
+  tx = await walletContract.executeWithProof(
+    proofBytes,
+    signature,
+    publicInputsStruct,
+    intent.calls,
+    { gasLimit: 500000 }
+  );
 
-    const publicInputsStruct = {
-      commitment: directExecStructHash,
-      chainId,
-      signerAddress: payerAddress,
-      multicallDataHash: poseidonMulticallHashHex ?? intent.callsHash,
-      nonce: intent.nonce,
-      expiry: intent.expiry,
-    };
-
-    tx = await walletContract.executeWithProof(
-      proofResult.proof,
-      signature,
-      publicInputsStruct,
-      intent.calls,
-      { gasLimit: 500000 }
-    );
-
-    steps.push({
-      step: "executeWithProof",
-      status: "success",
-      durationMs: Date.now() - stepStart,
-      detail: `AgentWallet.executeWithProof() — ZK verified on-chain`,
-    });
-  } else {
-    // Fallback: executeDirectly (signature only, no ZK proof)
-    tx = await walletContract.executeDirectly(
-      signature,
-      intent.nonce,
-      intent.expiry,
-      intent.calls,
-      { gasLimit: 300000 }
-    );
-
-    steps.push({
-      step: "executeDirectly",
-      status: "fallback",
-      durationMs: Date.now() - stepStart,
-      detail: "AgentWallet.executeDirectly() — signature verified",
-    });
-  }
+  steps.push({
+    step: "executeWithProof",
+    status: "success",
+    durationMs: Date.now() - stepStart,
+    detail: `AgentWallet.executeWithProof() — ${proofMode === "groth16" ? "real ZK proof" : "MockZKVerifier"}`,
+  });
 
   // ── Step 5: Wait for confirmation + after-balance ─────────
   stepStart = Date.now();
@@ -678,7 +670,7 @@ async function handleExecutePayment(
   return {
     result: {
       status: "executed",
-      executionPath: useZkPath ? "executeWithProof" : "executeDirectly",
+      executionPath: proofMode === "groth16" ? "executeWithProof (real ZK)" : "executeWithProof (mock)",
       txHash: tx.hash,
       blockNumber: receipt.blockNumber,
       gasUsed: receipt.gasUsed.toString(),

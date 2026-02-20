@@ -4,17 +4,18 @@
     "rpcUrl": "https://sepolia.base.org",
     "blockExplorer": "https://sepolia.basescan.org",
     "contracts": {
-      "AgentWallet":           "0x99D238c22499e679e9d45578245083FE690C8B5f",
-      "AgentWalletFactory":    "0x9A92E10B3F62910254923CBfF59C3b1B4FFAcB41",
-      "MockUSDC":              "0x93560481FE085E4Fd1A0f0bAb2E625118A67aC1D",
-      "MockZKVerifier":        "0x83E59e879E1Ccf7bAd76FE9aeedBC1e5e3B50AcD",
-      "Groth16Verifier":       "0xE004ff1dE5009b12c11DE00616Ac7a28437e3475",
-      "Groth16VerifierAdapter":"0x7206d80BA38EDFd439951339eEAd95E3f301d8C8"
+      "AgentWallet": "0x99D238c22499e679e9d45578245083FE690C8B5f",
+      "AgentWalletFactory": "0x9A92E10B3F62910254923CBfF59C3b1B4FFAcB41",
+      "MockUSDC": "0x93560481FE085E4Fd1A0f0bAb2E625118A67aC1D",
+      "MockZKVerifier": "0x83E59e879E1Ccf7bAd76FE9aeedBC1e5e3B50AcD",
+      "Groth16Verifier": "0xB533793f4813822CFb326b75b8D459d8A9faCF4F",
+      "Groth16VerifierAdapter": "0x4FD7cb52eE367B9eC7Ec84d862B28C2230CCdaEE"
     },
     "wallets": {
       "owner": "0x77A93ecD2437DA60aAFDBF595e74e0317b0d0B47",
       "agent": "0x17C3771F0250b2774AA11b793Deb523d2D914E03"
-    }
+    },
+    "timestamp": "2026-02-20T22:24:46.599Z"
   },
   "base": {
     "chainId": 8453,
