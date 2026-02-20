@@ -19,7 +19,7 @@ User signs intent          Agent derives calldata        Chain verifies + execut
 ```
 
 The ZK circuit (Groth16, 10,790 constraints) proves:
-- `keccak256(intentBundle) == commitment` on the signed intent
+- `Poseidon(intentBundle fields) == commitment` on the signed intent
 - calldata is the canonical derivation of that intent
 - chainId, payer address, nonce, and expiry all match
 
@@ -59,15 +59,15 @@ vaeb/
 
 ## Deployed contracts — Base Sepolia
 
+All deployed addresses live in [`contracts/deployments/deployments.json`](contracts/deployments/deployments.json). Scripts and packages read from this file automatically — no manual address copy-paste needed.
+
 | Contract | Address |
 |---|---|
-| AgentWallet | `0x99D238c22499e679e9d45578245083FE690C8B5f` |
-| AgentWalletFactory | `0x9A92E10B3F62910254923CBfF59C3b1B4FFAcB41` |
-| Groth16Verifier | `0x...` |
-| Groth16VerifierAdapter | `0x...` |
-| MockUSDC | `0x93560481FE085E4Fd1A0f0bAb2E625118A67aC1D` |
-
-Explorer: [sepolia.basescan.org](https://sepolia.basescan.org)
+| AgentWallet | [`0x99D238c22499e679e9d45578245083FE690C8B5f`](https://sepolia.basescan.org/address/0x99D238c22499e679e9d45578245083FE690C8B5f) |
+| AgentWalletFactory | [`0x9A92E10B3F62910254923CBfF59C3b1B4FFAcB41`](https://sepolia.basescan.org/address/0x9A92E10B3F62910254923CBfF59C3b1B4FFAcB41) |
+| Groth16Verifier | [`0xB533793f4813822CFb326b75b8D459d8A9faCF4F`](https://sepolia.basescan.org/address/0xB533793f4813822CFb326b75b8D459d8A9faCF4F) |
+| Groth16VerifierAdapter | [`0x4FD7cb52eE367B9eC7Ec84d862B28C2230CCdaEE`](https://sepolia.basescan.org/address/0x4FD7cb52eE367B9eC7Ec84d862B28C2230CCdaEE) |
+| MockUSDC | [`0x93560481FE085E4Fd1A0f0bAb2E625118A67aC1D`](https://sepolia.basescan.org/address/0x93560481FE085E4Fd1A0f0bAb2E625118A67aC1D) |
 
 ---
 
@@ -95,6 +95,11 @@ AGENT_PRIVATE_KEY=0x<agent-key>       # Agent EOA that submits transactions
 OWNER_ADDRESS=0x<owner-address>
 BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
 CHAIN_ID=84532
+
+# AI chat backend (pick one)
+OPENAI_API_KEY=sk-...
+# or
+DEEPSEEK_API_KEY=sk-...
 ```
 
 Generate wallets if needed:
@@ -113,7 +118,7 @@ Fund both with Base Sepolia ETH (owner needs ~0.01, agent needs ~0.001):
 npm run build
 ```
 
-### 4. Run the ZK demo
+### 4. Run the ZK demo (standalone)
 
 ```bash
 node scripts/demo-zkproof.js
@@ -129,6 +134,41 @@ AgentWallet USDC: 900.0 (was 1000.0)
 Recipient USDC:   100.0 (was 0.0)
 ✅ ALL CHECKS PASSED — real ZK proof verified on-chain!
 ```
+
+### 5. Run the full stack (chat UI + agent)
+
+Open four terminals:
+
+**Terminal 1 — Prover service** (generates Groth16 proofs):
+```bash
+cd packages/prover-service
+npm start
+# Listening on http://localhost:3001
+# POST /prove  POST /verify  GET /health
+```
+
+**Terminal 2 — Express backend** (AI agent + MCP tool bridge):
+```bash
+cd packages/server
+npm run dev
+# Listening on http://localhost:3002
+# Requires OPENAI_API_KEY or DEEPSEEK_API_KEY in .env
+```
+
+**Terminal 3 — Frontend** (React chat UI):
+```bash
+cd packages/frontend
+npm run dev
+# Open http://localhost:5173
+```
+
+Then open [http://localhost:5173](http://localhost:5173), connect MetaMask, and chat with the agent. Example prompts:
+
+- *"What's my wallet balance?"*
+- *"Hire Alice to buy groceries for 25 USDC"*
+- *"Send 10 USDC to 0x..."*
+
+The agent will ask you to sign the intent in MetaMask, then generate a ZK proof and execute it on-chain automatically.
 
 ---
 
@@ -221,14 +261,17 @@ The MCP server falls back to `executeDirectly()` (signature-only, no ZK proof) i
 
 Full-stack demo: React chat UI where you can talk to an AI agent that executes real on-chain payments.
 
-```bash
-# Terminal 1 — backend
-cd packages/server
-npm run dev
+Requires the prover service running on port 3001 (see Quick start step 5).
 
-# Terminal 2 — frontend
-cd packages/frontend
-npm run dev
+```bash
+# Terminal 1 — prover service (port 3001)
+cd packages/prover-service && npm start
+
+# Terminal 2 — Express backend (port 3002)
+cd packages/server && npm run dev
+
+# Terminal 3 — frontend (port 5173)
+cd packages/frontend && npm run dev
 ```
 
 The frontend connects MetaMask, shows wallet balances, and lets you chat with the agent. The agent uses the MCP tool pipeline to construct, prove, and execute intents.
@@ -305,7 +348,7 @@ Bridges AgentWallet's `IGroth16Verifier` interface to the snarkjs-generated veri
 
 The `IntentVerifier.circom` circuit proves (off-chain) that:
 
-1. `keccak256(intentBundle) == commitment`
+1. `Poseidon(intentBundle fields) == commitment`
 2. calldata was correctly derived from each action in the bundle
 3. `chainId`, `payer`, `nonce`, `expiry` in the bundle match the public inputs
 
