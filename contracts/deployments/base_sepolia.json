@@ -1,0 +1,15 @@
+{
+  "network": "base_sepolia",
+  "chainId": 84532,
+  "timestamp": "2026-02-20T05:24:40.821Z",
+  "contracts": {
+    "MockZKVerifier": "0x83E59e879E1Ccf7bAd76FE9aeedBC1e5e3B50AcD",
+    "MockUSDC": "0x93560481FE085E4Fd1A0f0bAb2E625118A67aC1D",
+    "AgentWallet": "0x99D238c22499e679e9d45578245083FE690C8B5f",
+    "AgentWalletFactory": "0x9A92E10B3F62910254923CBfF59C3b1B4FFAcB41"
+  },
+  "wallets": {
+    "owner": "0x77A93ecD2437DA60aAFDBF595e74e0317b0d0B47",
+    "agent": "0x17C3771F0250b2774AA11b793Deb523d2D914E03"
+  }
+}

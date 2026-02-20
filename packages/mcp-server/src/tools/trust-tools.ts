@@ -134,8 +134,9 @@ async function discoverAgents(args: any, config: Config) {
   let candidates = DEMO_AGENTS.filter((a) => {
     if (minReputation > 0 && a.reputation.avgScore < minReputation) return false;
     if (chainKey) {
-      const chainName = CHAINS[chainKey]?.name?.toLowerCase() || chainKey;
-      if (!a.metadata.supportedChains.some((c) => c.toLowerCase().includes(chainName.replace("_sepolia", "")))) {
+      // Strip network suffix (e.g. "base_sepolia" → "base", "ethereum_sepolia" → "ethereum")
+      const chainBase = chainKey.replace(/_sepolia$/, "").replace(/_mainnet$/, "");
+      if (!a.metadata.supportedChains.some((c) => c.toLowerCase().includes(chainBase))) {
         return false;
       }
     }

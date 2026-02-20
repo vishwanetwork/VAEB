@@ -20,6 +20,8 @@ import {
   ActionType,
   CHAINS,
   DEFAULTS,
+  IntentBundle,
+  DerivedCalldata,
 } from "@vaeb/intent-sdk";
 
 type Config = {
@@ -28,14 +30,19 @@ type Config = {
   walletPrivateKey: string;
   proverEndpoint: string;
   requireManualApproval: boolean;
+  rpcUrl?: string;
+  chainId?: number;
+  contracts?: {
+    AgentWallet?: string;
+  };
 };
 
 // In-memory intent store (for hackathon — production uses Redis/DB)
 const intentStore = new Map<
   string,
   {
-    bundle: any;
-    derivedCalldata: any;
+    bundle: IntentBundle;
+    derivedCalldata: DerivedCalldata;
     chainKey: string;
     createdAt: number;
     status: "pending" | "signed" | "executing" | "executed" | "failed" | "cancelled";
@@ -70,9 +77,10 @@ async function createIntent(args: any, config: Config) {
   const chain = CHAINS[chainKey];
   if (!chain) throw new Error(`Unsupported chain: ${chainKey}`);
 
-  // Get the AgentWallet address
-  const wallet = new ethers.Wallet(config.walletPrivateKey || ethers.Wallet.createRandom().privateKey);
-  const walletAddress = wallet.address;
+  // Get the AgentWallet contract address (the payer / smart wallet)
+  const walletAddress =
+    config.contracts?.AgentWallet ||
+    new ethers.Wallet(config.walletPrivateKey || ethers.Wallet.createRandom().privateKey).address;
 
   // Map input actions to SDK format
   const actions = args.actions.map((a: any) => ({
@@ -147,11 +155,25 @@ async function executeIntent(args: any, config: Config) {
   stored.status = "executing";
 
   try {
-    // Step 1: x402 payment would happen here
+    // Step 1: Pre-check nonce on-chain before spending time on proof generation
+    if (config.contracts?.AgentWallet) {
+      const NONCE_ABI = ["function isNonceUsed(bytes32) view returns (bool)"];
+      const rpcUrl = config.rpcUrl || CHAINS[stored.chainKey]?.rpcUrl;
+      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const walletContract = new ethers.Contract(
+        config.contracts.AgentWallet,
+        NONCE_ABI,
+        provider
+      );
+      const nonceUsed = await walletContract.isNonceUsed(stored.bundle.nonce);
+      if (nonceUsed) throw new Error(`Nonce already used on-chain: ${stored.bundle.nonce}`);
+    }
+
+    // Step 2: x402 payment would happen here
     // In production: HTTP 402 → X-PAYMENT header → verify + settle
     const x402Fee = DEFAULTS.SERVICE_FEE_USDC;
 
-    // Step 2: Generate ZK proof
+    // Step 3: Generate ZK proof
     const proofResult: any = await generateProof(
       stored.bundle,
       stored.derivedCalldata,
@@ -221,6 +243,7 @@ async function cancelIntent(args: any, _config: Config) {
   const stored = intentStore.get(args.intent_id);
   if (!stored) throw new Error(`Intent not found: ${args.intent_id}`);
   if (stored.status === "executed") throw new Error("Cannot cancel executed intent");
+  if (stored.status === "cancelled") throw new Error("Intent already cancelled");
 
   stored.status = "cancelled";
 
@@ -235,9 +258,9 @@ async function cancelIntent(args: any, _config: Config) {
 // ─── Helper: Generate ZK Proof ──────────────────────────────────
 
 async function generateProof(
-  bundle: any,
-  derivedCalldata: any,
-  signature: string,
+  bundle: IntentBundle,
+  derivedCalldata: DerivedCalldata,
+  _signature: string,
   config: Config
 ) {
   try {
@@ -291,11 +314,18 @@ async function generateProof(
   };
 }
 
+// ─── AgentWallet ABI (minimal) ──────────────────────────────────
+
+const AGENT_WALLET_ABI = [
+  "function executeWithProof(bytes proof, bytes signature, tuple(bytes32 commitment, uint256 chainId, address signerAddress, bytes32 multicallDataHash, bytes32 nonce, uint256 expiry) publicInputs, tuple(address target, uint256 value, bytes data)[] calls) external",
+  "event IntentExecuted(bytes32 indexed intentId, address indexed signer, bytes32 nonce, uint256 callCount, uint256 gasUsed)",
+];
+
 // ─── Helper: Submit to Chain ────────────────────────────────────
 
 async function submitToChain(
-  bundle: any,
-  derivedCalldata: any,
+  bundle: IntentBundle,
+  derivedCalldata: DerivedCalldata,
   proofResult: any,
   signature: string,
   chainKey: string,
@@ -304,27 +334,45 @@ async function submitToChain(
   const chain = CHAINS[chainKey];
   if (!chain) throw new Error(`Unknown chain: ${chainKey}`);
 
-  // In production, this would:
-  // 1. Connect to the chain via RPC
-  // 2. Call AgentWallet.executeWithProof(proof, signature, publicInputs, calls)
-  // 3. Wait for transaction confirmation
-  //
-  // For the hackathon demo, we simulate the on-chain submission
+  const agentWalletAddress = config.contracts?.AgentWallet;
+  if (!agentWalletAddress) throw new Error("AgentWallet address not configured");
 
-  const simulatedTxHash = ethers.keccak256(
-    ethers.AbiCoder.defaultAbiCoder().encode(
-      ["bytes32", "uint256", "bytes"],
-      [computeIntentId(bundle), Date.now(), signature || "0x"]
-    )
+  const rpcUrl = config.rpcUrl || chain.rpcUrl;
+  const provider = new ethers.JsonRpcProvider(rpcUrl);
+  const agentSigner = new ethers.Wallet(config.walletPrivateKey, provider);
+  const walletContract = new ethers.Contract(agentWalletAddress, AGENT_WALLET_ABI, agentSigner);
+
+  const publicInputs = {
+    commitment: computeIntentId(bundle),
+    chainId: bundle.chainId,
+    signerAddress: bundle.payer,
+    multicallDataHash: derivedCalldata.multicallDataHash,
+    nonce: bundle.nonce,
+    expiry: bundle.expiry,
+  };
+
+  const calls = derivedCalldata.calls.map((c) => ({
+    target: c.target,
+    value: c.value,
+    data: c.data,
+  }));
+
+  const proofBytes = proofResult.proof || "0x";
+
+  const tx = await walletContract.executeWithProof(
+    proofBytes,
+    signature,
+    publicInputs,
+    calls,
+    { gasLimit: 500000 }
   );
 
+  const receipt = await tx.wait();
+
   return {
-    txHash: simulatedTxHash,
-    gasUsed: "245000",
-    output: {
-      token: "ETH",
-      amount: "0.03082",
-    },
+    txHash: tx.hash,
+    gasUsed: receipt.gasUsed.toString(),
+    output: { token: "USDC", amount: "see receipt" },
   };
 }
 

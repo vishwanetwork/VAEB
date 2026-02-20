@@ -12,12 +12,17 @@ import { CHAINS } from "@vaeb/intent-sdk";
 type Config = {
   defaultChain: string;
   supportedChains: string[];
+  rpcUrl?: string;
+  contracts?: {
+    AgentWallet?: string;
+    MockUSDC?: string;
+  };
 };
 
-function getProvider(chainKey: string): ethers.JsonRpcProvider {
+function getProvider(chainKey: string, rpcOverride?: string): ethers.JsonRpcProvider {
   const chain = CHAINS[chainKey];
   if (!chain) throw new Error(`Unsupported chain: ${chainKey}. Supported: ${Object.keys(CHAINS).join(", ")}`);
-  return new ethers.JsonRpcProvider(chain.rpcUrl);
+  return new ethers.JsonRpcProvider(rpcOverride || chain.rpcUrl);
 }
 
 // ─── ERC-20 ABI fragments ───────────────────────────────────────
@@ -34,6 +39,10 @@ const ERC20_ABI = [
 export const chainTools = {
   async handle(name: string, args: any, config: Config): Promise<any> {
     switch (name) {
+      case "get_wallet_balance":
+        return getWalletBalance(config);
+      case "check_nonce":
+        return checkNonce(args, config);
       case "read_balance":
         return readBalance(args, config);
       case "get_price":
@@ -94,6 +103,69 @@ async function readBalance(args: any, config: Config) {
       tokenAddress,
     };
   }
+}
+
+// ─── get_wallet_balance ─────────────────────────────────────────
+
+const WALLET_ABI = ["function isNonceUsed(bytes32) view returns (bool)"];
+
+async function getWalletBalance(config: Config) {
+  const chainKey = config.defaultChain || "base_sepolia";
+  const chain = CHAINS[chainKey];
+  if (!chain) throw new Error(`Chain not found: ${chainKey}`);
+
+  const walletAddress = config.contracts?.AgentWallet;
+  if (!walletAddress) throw new Error("AgentWallet address not configured");
+
+  const provider = getProvider(chainKey, config.rpcUrl);
+  const ethBalance = await provider.getBalance(walletAddress);
+
+  let usdcBalance = "N/A";
+  const usdcAddress = config.contracts?.MockUSDC || chain.tokens.USDC;
+  try {
+    const erc20 = new ethers.Contract(usdcAddress, ERC20_ABI, provider);
+    const [bal, dec] = await Promise.all([erc20.balanceOf(walletAddress), erc20.decimals()]);
+    usdcBalance = ethers.formatUnits(bal, dec);
+  } catch {
+    // token may not exist on this chain
+  }
+
+  const ethFloat = parseFloat(ethers.formatEther(ethBalance));
+  return {
+    agentWallet: walletAddress,
+    chain: chainKey,
+    eth: ethers.formatEther(ethBalance),
+    usdc: usdcBalance,
+    usdcToken: usdcAddress,
+    sufficient_for_gas: ethFloat > 0.001,
+    warning: ethFloat < 0.001 ? "ETH balance low — may not cover gas" : undefined,
+  };
+}
+
+// ─── check_nonce ────────────────────────────────────────────────
+
+async function checkNonce(args: any, config: Config) {
+  const chainKey = config.defaultChain || "base_sepolia";
+  const chain = CHAINS[chainKey];
+  if (!chain) throw new Error(`Chain not found: ${chainKey}`);
+
+  const walletAddress = config.contracts?.AgentWallet;
+  if (!walletAddress) throw new Error("AgentWallet address not configured");
+
+  const provider = getProvider(chainKey, config.rpcUrl);
+  const wallet = new ethers.Contract(walletAddress, WALLET_ABI, provider);
+  const isUsed = await wallet.isNonceUsed(args.nonce);
+
+  return {
+    nonce: args.nonce,
+    used: isUsed,
+    safe_to_use: !isUsed,
+    agentWallet: walletAddress,
+    chain: chainKey,
+    note: isUsed
+      ? "Nonce already used — do not attempt execution"
+      : "Nonce is fresh — safe to execute",
+  };
 }
 
 // ─── get_price ──────────────────────────────────────────────────

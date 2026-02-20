@@ -1,0 +1,15 @@
+{
+  "network": "base_sepolia",
+  "chainId": 84532,
+  "timestamp": "2026-02-18T23:41:15.249Z",
+  "contracts": {
+    "Groth16Verifier": "0xE004ff1dE5009b12c11DE00616Ac7a28437e3475",
+    "VerifierAdapter": "0x7206d80BA38EDFd439951339eEAd95E3f301d8C8",
+    "MockUSDC": "0xE66D20A340e3F45C55d3A7cfB6b25458d9b0d193",
+    "AgentWallet": "0x4D7c95c0dd8840CD597DF7D75fb2D7ADc08bA0AA"
+  },
+  "proof": {
+    "generationTime": "0.4s",
+    "offchainValid": true
+  }
+}

@@ -32,12 +32,12 @@ VAEB (Verified Agent Execution Bundle) enables AI agents to execute on-chain tra
 │                        AGENT LAYER                              │
 │                                                                 │
 │  MCP Server                                                     │
-│  ├── NL Parser (intent → structured action)                     │
-│  ├── Balance Checker (what tokens does user have?)              │
-│  ├── Route Optimizer (best swap path if token mismatch)         │
-│  ├── Intent Builder (construct IntentBundle via SDK)            │
-│  ├── x402 Client (pay for services, charge for execution)      │
-│  └── Transaction Submitter (sign + submit to chain)            │
+│  ├── get_wallet_balance (check AgentWallet ETH + USDC)         │
+│  ├── create_intent (build IntentBundle via SDK)                 │
+│  ├── execute_intent (prove + submit executeWithProof())         │
+│  ├── check_nonce (verify nonce freshness before execution)      │
+│  ├── get_price / estimate_gas / get_receipt (chain reads)       │
+│  └── discover_agents / get_agent_reputation (ERC-8004 trust)   │
 │                               │                                  │
 │                               ▼                                  │
 │  Prover Service (x402-gated)                                    │
@@ -54,7 +54,10 @@ VAEB (Verified Agent Execution Bundle) enables AI agents to execute on-chain tra
 ├─────────────────────────────────────────────────────────────────┤
 │                       ON-CHAIN LAYER (Base Sepolia)             │
 │                                                                 │
-│  AgentWallet (ERC-8150)                                         │
+│  AgentWalletFactory                                             │
+│  └── CREATE2 deterministic wallet deployment per user           │
+│                                                                 │
+│  AgentWallet (ERC-8150) — one per user                         │
 │  ├── executeWithProof() ── ZK path (proof + signature)         │
 │  ├── executeDirectly()  ── Simple path (signature only)        │
 │  ├── Nonce replay protection                                    │
@@ -69,18 +72,87 @@ VAEB (Verified Agent Execution Bundle) enables AI agents to execute on-chain tra
 
 ---
 
+## Complete User Flow
+
+### Setup (One Time per User)
+
+```
+1. User opens VAEB frontend → connects MetaMask (Base Sepolia)
+
+2. Frontend calls AgentWalletFactory.createWallet(
+       owner = user's MetaMask address,
+       agent = VAEB server EOA (0x17C3771F...),
+       salt  = random bytes32
+   )
+   └─ deploys AgentWallet via CREATE2 (deterministic address)
+   └─ user pays gas
+
+3. User deposits ETH + USDC into their AgentWallet contract
+   (NOT into MetaMask — into the smart contract wallet)
+```
+
+### Per-Transaction Flow
+
+```
+4. User tells Claude: "Send 100 USDC to 0xABC"
+
+5. Claude calls get_wallet_balance
+   └─ confirms sufficient ETH (gas) + USDC in AgentWallet
+
+6. Claude calls create_intent(actions=[TRANSFER 100 USDC to 0xABC])
+   └─ VAEB builds IntentBundle + derives calldata
+   └─ returns human-readable preview
+
+7. Claude asks user to sign the EIP-712 intent via MetaMask
+   └─ user reviews and signs — signature returned to Claude
+
+8. Claude calls execute_intent(intent_id, signature)
+   a. VAEB checks nonce is fresh on-chain (isNonceUsed)
+   b. Sends bundle to prover → Groth16 ZK proof generated
+      └─ proof binds: intent commitment ↔ calldata
+   c. Submits AgentWallet.executeWithProof(proof, sig, inputs, calls)
+      └─ VAEB EOA signs and broadcasts, pays gas
+
+9. AgentWallet verifies on-chain:
+   ├─ ZK proof valid (Groth16Verifier)
+   ├─ EIP-712 signature from owner (user's MetaMask)
+   ├─ nonce not used, not expired, correct chainId
+   └─ executes calls atomically
+
+10. Claude: "Done. Tx: 0x... — view on BaseScan"
+```
+
+### Security Model
+
+```
+┌─────────────────┬──────────────────────────────────────────┐
+│ User MetaMask   │ signing key only — holds no funds         │
+│ AgentWallet     │ holds all funds — smart contract          │
+│ VAEB EOA        │ submits txs, pays gas — cannot steal      │
+└─────────────────┴──────────────────────────────────────────┘
+
+VAEB EOA: 0x17C3771F0250b2774AA11b793Deb523d2D914E03
+```
+
+---
+
 ## What's Built (Done)
 
 - [x] **AgentWallet.sol** — production-quality ERC-8150 wallet, deployed on Base Sepolia
+- [x] **AgentWalletFactory.sol** — CREATE2 factory for deterministic multi-user wallet deployment
 - [x] **IntentVerifier.circom** — Groth16 circuit, 10,790 constraints, real derivation verification
-- [x] **Groth16Verifier.sol** — snarkjs-generated on-chain verifier
-- [x] **Groth16VerifierAdapter.sol** — bridges wallet ↔ verifier interfaces
+- [x] **Groth16Verifier.sol** — snarkjs-generated on-chain verifier, deployed on Base Sepolia
+- [x] **Groth16VerifierAdapter.sol** — bridges wallet ↔ verifier interfaces, deployed on Base Sepolia
 - [x] **Intent SDK** — bundle creation, signing, calldata derivation, 13 passing tests
-- [x] **Prover Service** — Express.js wrapper around snarkjs (real + simulated modes)
-- [x] **MCP Server** — tool definitions for AI agent integration
-- [x] **demo-zkproof.js** — end-to-end demo: deploy → prove → verify → execute on Base Sepolia
+- [x] **Prover Service** — Express.js wrapper around snarkjs (real Groth16 proofs by default)
+- [x] **MCP Server** — 15 tools: chain reads, intent lifecycle, ERC-8004 trust/reputation
+- [x] **MCP execute_intent** — real `executeWithProof()` submission via ethers.js, real txHash
+- [x] **get_wallet_balance / check_nonce** — live on-chain reads in MCP server
+- [x] **Nonce pre-check** — `isNonceUsed()` called before proof generation in `execute_intent`
 - [x] **EIP-712 signatures** — owner signs intents, contract recovers signer
 - [x] **Nonce + expiry** — replay protection and stale intent rejection
+- [x] **Foundry tests** — 68/68 passing (AgentWallet: 41 tests, AgentWalletFactory: 27 tests)
+- [x] **demo-zkproof.js** — end-to-end demo: deploy → prove → verify → execute on Base Sepolia
 
 ---
 
@@ -90,18 +162,16 @@ VAEB (Verified Agent Execution Bundle) enables AI agents to execute on-chain tra
 
 Goal: Everything that exists works end-to-end with no simulation or stubs.
 
-**1.1 Prover Service — Real Mode by Default**
+**1.1 Prover Service — Real Mode by Default** ✅ Done
 - Auto-detect circuit artifacts in `circuits/build/`
 - Default to real Groth16 proofs when artifacts exist
 - Fall back to simulated only when artifacts are missing
-- Files: `packages/prover-service/src/prover-engine.ts`
 
-**1.2 MCP Server — Real Execution**
-- Wire `execute_intent` to call real prover service
-- Submit real `executeWithProof()` transaction via ethers.js
-- Return real txHash and BaseScan link
-- Wire `create_intent` to produce real IntentBundles
-- Files: `packages/mcp-server/src/intent-tools.ts`
+**1.2 MCP Server — Real Execution** ✅ Done
+- `execute_intent` calls real prover service
+- Submits real `executeWithProof()` transaction via ethers.js
+- Returns real txHash and BaseScan link
+- Nonce pre-check before proof generation
 
 **1.3 Frontend — Working Demo with Wallet Connection**
 - Connect to MetaMask (Base Sepolia network)
@@ -113,10 +183,9 @@ Goal: Everything that exists works end-to-end with no simulation or stubs.
 - Tech: vanilla HTML + ethers.js (no framework needed)
 - Files: `demo/index.html`
 
-**1.4 Persistent Deployment**
-- Deploy contracts once, save addresses to config
-- Frontend and MCP server read from `contracts/deployments/zkproof-demo-results.json`
-- No more redeploying on every demo run
+**1.4 Deploy AgentWalletFactory**
+- Deploy to Base Sepolia, save address to `contracts/deployments/base_sepolia.json`
+- Wire frontend to call `createWallet()` for new users
 
 ---
 
@@ -129,7 +198,7 @@ Goal: User types English, agent produces a structured intent and executes it.
 - Parse into structured action: type, token, amount, recipient
 - Support TRANSFER ("send 100 USDC to 0xABC") and SWAP ("swap 100 USDC for ETH")
 - Resolve token symbols to addresses (USDC → 0x..., ETH → native)
-- Files: `packages/mcp-server/src/intent-tools.ts`
+- Files: `packages/mcp-server/src/tools/intent-tools.ts`
 
 **2.2 Agent Confirmation Flow**
 - Agent explains what it's about to do before requesting signature
@@ -158,7 +227,7 @@ Goal: Agent services are paid via HTTP 402 micropayments, creating a self-sustai
 - Detect 402 responses from prover service
 - Initiate on-chain USDC payment from AgentWallet via `executeDirectly()`
 - Retry service call with payment proof header
-- Files: `packages/mcp-server/src/intent-tools.ts`
+- Files: `packages/mcp-server/src/tools/intent-tools.ts`
 
 **3.3 Fee Collection**
 - MCP server charges user a fee for `execute_intent`
@@ -218,13 +287,9 @@ Goal: Merchant specifies accepted tokens. Agent auto-swaps and pays in one atomi
 - 2:00-2:30 — MCP + Claude integration
 - 2:30-3:00 — x402 economy + merchant payment routing
 
-**5.3 Contract Tests (Foundry)**
-- `testExecuteWithProof()` — happy path
-- `testExecuteDirectly()` — happy path
-- `testReplayProtection()` — same nonce rejected
-- `testExpiry()` — expired intent rejected
-- `testInvalidSignature()` — wrong signer rejected
-- `testInvalidProof()` — bad proof rejected
+**5.3 Contract Tests (Foundry)** ✅ Done (68/68 passing)
+- `AgentWallet.t.sol` — 41 tests (executeWithProof, executeDirectly, nonces, admin)
+- `AgentWalletFactory.t.sol` — 27 tests (createWallet, predictAddress, isWallet, access control)
 
 **5.4 BaseScan Verification**
 - Verify all deployed contract source code on BaseScan
@@ -239,7 +304,7 @@ Goal: Merchant specifies accepted tokens. Agent auto-swaps and pays in one atomi
 
 | Layer | Technology |
 |-------|-----------|
-| Smart Contracts | Solidity 0.8.x, ERC-8150 |
+| Smart Contracts | Solidity 0.8.24, ERC-8150 |
 | ZK Circuits | Circom (Groth16, BN128) |
 | ZK Proofs | snarkjs |
 | On-chain Verifier | snarkjs-generated Solidity |
@@ -251,6 +316,7 @@ Goal: Merchant specifies accepted tokens. Agent auto-swaps and pays in one atomi
 | Payment Protocol | x402 (Coinbase SDK) |
 | Chain | Base Sepolia (chainId 84532) |
 | Frontend | Vanilla HTML + ethers.js |
+| Contract Tests | Foundry (forge) |
 
 ---
 
@@ -258,10 +324,14 @@ Goal: Merchant specifies accepted tokens. Agent auto-swaps and pays in one atomi
 
 | Contract | Address |
 |----------|---------|
+| AgentWallet | `0x99D238c22499e679e9d45578245083FE690C8B5f` |
+| MockUSDC | `0x93560481FE085E4Fd1A0f0bAb2E625118A67aC1D` |
+| MockZKVerifier | `0x83E5...` (dev only — real verifier below) |
 | Groth16Verifier | `0xE004ff1dE5009b12c11DE00616Ac7a28437e3475` |
 | Groth16VerifierAdapter | `0x7206d80BA38EDFd439951339eEAd95E3f301d8C8` |
-| MockUSDC | `0xE66D20A340e3F45C55d3A7cfB6b25458d9b0d193` |
-| AgentWallet | `0x4D7c95c0dd8840CD597DF7D75fb2D7ADc08bA0AA` |
+| AgentWalletFactory | not yet deployed |
+
+VAEB Agent EOA: `0x17C3771F0250b2774AA11b793Deb523d2D914E03`
 
 ---
 
@@ -275,18 +345,28 @@ vaeb/
 ├── contracts/
 │   ├── src/                         # Solidity contracts
 │   │   ├── AgentWallet.sol          # Core ERC-8150 wallet
-│   │   ├── Groth16Verifier.sol      # On-chain ZK verifier
+│   │   ├── AgentWalletFactory.sol   # CREATE2 factory for multi-user deployment
+│   │   ├── Groth16Verifier.sol      # On-chain ZK verifier (snarkjs-generated)
 │   │   ├── Groth16VerifierAdapter.sol
-│   │   └── mocks/MockERC20.sol
-│   ├── out/                         # Compiled ABI + bytecode
-│   └── deployments/                 # Deployment addresses
+│   │   ├── interfaces/              # IAgentWallet, IGroth16Verifier
+│   │   ├── lib/                     # ECDSA, EIP712
+│   │   └── mocks/                   # MockERC20, MockZKVerifier
+│   ├── test/                        # Foundry tests (68/68 passing)
+│   │   ├── AgentWallet.t.sol        # 41 tests
+│   │   └── AgentWalletFactory.t.sol # 27 tests
+│   ├── out/                         # Compiled ABI + bytecode (solcjs)
+│   ├── out_forge/                   # Compiled ABI + bytecode (forge)
+│   ├── lib/forge-std/               # Foundry test library
+│   ├── foundry.toml                 # Foundry config
+│   └── deployments/                 # Deployment addresses per chain
 ├── packages/
 │   ├── intent-sdk/                  # TypeScript SDK
-│   ├── mcp-server/                  # MCP server for AI agents
+│   ├── mcp-server/                  # MCP server for AI agents (15 tools)
 │   └── prover-service/              # ZK prover (Express.js)
 ├── scripts/
 │   ├── demo-zkproof.js              # Full ZK demo (Base Sepolia)
-│   └── demo-live.js                 # Simple demo (no ZK)
+│   ├── demo-live.js                 # Simple demo (no ZK)
+│   └── deploy-real-verifier.js      # Swap MockZKVerifier → Groth16VerifierAdapter
 ├── demo/
 │   └── index.html                   # Interactive frontend
 ├── doc/
@@ -303,8 +383,8 @@ vaeb/
 
 | Phase | Deliverable | Status |
 |-------|------------|--------|
-| Phase 1 | Real end-to-end execution (no stubs) | Not started |
+| Phase 1 | Real end-to-end execution (no stubs) | 🟡 In Progress (1.1, 1.2 done — frontend + factory deploy remain) |
 | Phase 2 | Natural language → intent → execution | Not started |
 | Phase 3 | x402 payment economy | Not started |
 | Phase 4 | Multi-token merchant payment routing | Not started |
-| Phase 5 | README, video, tests, submission | Not started |
+| Phase 5 | README, video, tests, submission | 🟡 In Progress (5.3 Foundry tests done) |
