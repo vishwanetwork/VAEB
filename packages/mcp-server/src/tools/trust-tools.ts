@@ -1,13 +1,14 @@
 /**
  * Trust Tools — ERC-8004 Integration
  *
- * These tools query the three ERC-8004 on-chain registries:
- *   - IdentityRegistry: Agent registration (ERC-721 NFTs)
- *   - ReputationRegistry: Feedback scores and tags
- *   - ValidationRegistry: ZK proof re-verification records
+ * Queries the three ERC-8004 on-chain registries deployed on Base Sepolia:
+ *   - IdentityRegistry   0x8004A818BFB912233c491871b3d84c89A494BD9e
+ *   - ReputationRegistry 0x8004B663056A597Dffe9eCcC1965A193B7388713
+ *   - ValidationRegistry — not yet deployed; falls back to stub data
  *
- * Together they form the "Trust Loop":
- *   discover → evaluate → execute → feedback → validate
+ * Each handler attempts a live on-chain read first. If the registry address
+ * is unavailable or the call fails (e.g. wrong chain, no RPC), it falls back
+ * to DEMO_AGENTS so the demo still runs without a live connection.
  */
 
 import { ethers } from "ethers";
@@ -16,89 +17,115 @@ import { CHAINS, ERC8004_ADDRESSES } from "@vaeb/intent-sdk";
 type Config = {
   defaultChain: string;
   supportedChains: string[];
+  signerPrivateKey?: string; // Required for post_feedback
 };
 
-// ─── ABI Fragments for ERC-8004 Contracts ───────────────────────
+// ─── ABIs for ERC-8004 Contracts ───────────────────────
 
 const IDENTITY_REGISTRY_ABI = [
-  "function register(string tokenURI, tuple(string key, string value)[] metadata) returns (uint256)",
-  "function getMetadata(uint256 agentId) view returns (tuple(string key, string value)[])",
-  "function ownerOf(uint256 tokenId) view returns (address)",
-  "function totalSupply() view returns (uint256)",
+  "function register() external returns (uint256 agentId)",
+  "function register(string memory agentURI) external returns (uint256 agentId)",
+  "function register(string memory agentURI, tuple(string metadataKey, bytes metadataValue)[] memory metadata) external returns (uint256 agentId)",
+  "function tokenURI(uint256 tokenId) external view returns (string memory)",
+  "function ownerOf(uint256 tokenId) external view returns (address)",
+  "function totalSupply() external view returns (uint256)",
+  "function getMetadata(uint256 agentId, string memory metadataKey) external view returns (bytes memory)",
+  "function getAgentWallet(uint256 agentId) external view returns (address)",
+  "function isAuthorizedOrOwner(address spender, uint256 agentId) external view returns (bool)",
+  "function getVersion() external pure returns (string memory)",
+  "function setMetadata(uint256 agentId, string memory metadataKey, bytes memory metadataValue) external",
+  "function setAgentURI(uint256 agentId, string calldata newURI) external",
+  "function setAgentWallet(uint256 agentId, address newWallet, uint256 deadline, bytes calldata signature) external",
+  "function unsetAgentWallet(uint256 agentId) external",
+  "event Registered(uint256 indexed agentId, string agentURI, address indexed owner)",
+  "event MetadataSet(uint256 indexed agentId, string indexed indexedMetadataKey, string metadataKey, bytes metadataValue)",
+  "event URIUpdated(uint256 indexed agentId, string newURI, address indexed updatedBy)",
   "event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)",
 ];
 
 const REPUTATION_REGISTRY_ABI = [
-  "function giveFeedback(uint256 agentId, uint8 score, string tag1, string tag2, string fileuri, bytes32 filehash, bytes feedbackAuth)",
-  "function getSummary(uint256 agentId) view returns (uint256 avgScore, uint256 feedbackCount, string[] tags)",
-  "event FeedbackGiven(uint256 indexed agentId, uint8 score, string tag1, string tag2)",
+  "function getIdentityRegistry() external view returns (address)",
+  "function getLastIndex(uint256 agentId, address clientAddress) external view returns (uint64)",
+  "function readFeedback(uint256 agentId, address clientAddress, uint64 feedbackIndex) external view returns (int128 value, uint8 valueDecimals, string memory tag1, string memory tag2, bool isRevoked)",
+  "function getSummary(uint256 agentId, address[] calldata clientAddresses, string calldata tag1, string calldata tag2) external view returns (uint64 count, int128 summaryValue, uint8 summaryValueDecimals)",
+  "function readAllFeedback(uint256 agentId, address[] calldata clientAddresses, string calldata tag1, string calldata tag2, bool includeRevoked) external view returns (address[] memory clients, uint64[] memory feedbackIndexes, int128[] memory values, uint8[] memory valueDecimals, string[] memory tag1s, string[] memory tag2s, bool[] memory revokedStatuses)",
+  "function getResponseCount(uint256 agentId, address clientAddress, uint64 feedbackIndex, address[] calldata responders) external view returns (uint64 count)",
+  "function getClients(uint256 agentId) external view returns (address[] memory)",
+  "function getVersion() external pure returns (string memory)",
+  "function giveFeedback(uint256 agentId, int128 value, uint8 valueDecimals, string calldata tag1, string calldata tag2, string calldata endpoint, string calldata feedbackURI, bytes32 feedbackHash) external",
+  "function revokeFeedback(uint256 agentId, uint64 feedbackIndex) external",
+  "function appendResponse(uint256 agentId, address clientAddress, uint64 feedbackIndex, string calldata responseURI, bytes32 responseHash) external",
+  "event NewFeedback(uint256 indexed agentId, address indexed clientAddress, uint64 feedbackIndex, int128 value, uint8 valueDecimals, string indexed indexedTag1, string tag1, string tag2, string endpoint, string feedbackURI, bytes32 feedbackHash)",
+  "event FeedbackRevoked(uint256 indexed agentId, address indexed clientAddress, uint64 indexed feedbackIndex)",
+  "event ResponseAppended(uint256 indexed agentId, address indexed clientAddress, uint64 feedbackIndex, address indexed responder, string responseURI, bytes32 responseHash)",
 ];
 
 const VALIDATION_REGISTRY_ABI = [
-  "function validationRequest(address validatorAddress, uint256 agentId, string requestUri, bytes32 requestHash)",
-  "function validationResponse(bytes32 requestHash, uint8 response, string responseUri, bytes32 responseHash, string tag)",
-  "function getSummary(uint256 agentId) view returns (uint256 validationCount, uint256 passCount)",
+  "function getIdentityRegistry() external view returns (address)",
+  "function getSummary(uint256 agentId, address[] calldata validatorAddresses, string calldata tag) external view returns (uint64 count, uint8 avgResponse)",
+  "function getAgentValidations(uint256 agentId) external view returns (bytes32[] memory)",
+  "function getValidationStatus(bytes32 requestHash) external view returns (address validatorAddress, uint256 agentId, uint8 response, bytes32 responseHash, string memory tag, uint256 lastUpdate)",
+  "function getValidatorRequests(address validatorAddress) external view returns (bytes32[] memory)",
+  "function getVersion() external pure returns (string memory)",
+  "function validationRequest(address validatorAddress, uint256 agentId, string calldata requestURI, bytes32 requestHash) external",
+  "function validationResponse(bytes32 requestHash, uint8 response, string calldata responseURI, bytes32 responseHash, string calldata tag) external",
+  "event ValidationRequest(address indexed validatorAddress, uint256 indexed agentId, string requestURI, bytes32 indexed requestHash)",
+  "event ValidationResponse(address indexed validatorAddress, uint256 indexed agentId, bytes32 indexed requestHash, uint8 response, string responseURI, bytes32 responseHash, string tag)",
 ];
+
+const providerCache = new Map<string, ethers.JsonRpcProvider>();
+
+function getProvider(chainKey: string): ethers.JsonRpcProvider | null {
+  const cached = providerCache.get(chainKey);
+  if (cached) return cached;
+
+  const chain = CHAINS[chainKey];
+  if (!chain) return null;
+
+  try {
+    const provider = new ethers.JsonRpcProvider(chain.rpcUrl);
+    providerCache.set(chainKey, provider);
+    return provider;
+  } catch {
+    return null;
+  }
+}
+
+function getContracts(chainKey: string) {
+  const addrs = ERC8004_ADDRESSES[chainKey];
+  const provider = getProvider(chainKey);
+  if (!addrs || !provider) return null;
+
+  return {
+    identity: new ethers.Contract(addrs.identityRegistry, IDENTITY_REGISTRY_ABI, provider),
+    reputation: new ethers.Contract(addrs.reputationRegistry, REPUTATION_REGISTRY_ABI, provider),
+    validation: addrs.validationRegistry
+      ? new ethers.Contract(addrs.validationRegistry, VALIDATION_REGISTRY_ABI, provider)
+      : null,
+    provider,
+    addrs,
+  };
+}
 
 // ─── Simulated Agent Database (for demo) ────────────────────────
 // In production, these are queried from on-chain registries
 
 const DEMO_AGENTS = [
   {
-    agentId: 42,
-    name: "VAEB-Prover-Base-01",
+    agentId: 1,
+    agentURI: "https://vaeb.xyz/agent-1",
     owner: "0x1234567890123456789012345678901234567890",
-    metadata: {
-      agentName: "VAEB-Prover-Base-01",
-      supportedChains: ["base", "ethereum", "arbitrum"],
-      proofType: "groth16",
-      avgProofTime: "3200ms",
-      x402Pricing: "0.02 USDC per proof",
-    },
-    reputation: { avgScore: 9.2, feedbackCount: 1847, tags: { swap: 1200, execution_speed: 400, execution_quality: 247 } },
-    validation: { validationCount: 412, passRate: 1.0 },
+    metadata: { name: "VAEB-Agent-1", proofType: "groth16", avgProofTime: "3200ms" },
+    reputation: { count: 1847n, summaryValue: 920n, decimals: 2, clients: [] as string[] },
+    validation: { count: 412n, avgResponse: 98 },
   },
   {
-    agentId: 78,
-    name: "VAEB-Prover-Multi-02",
-    owner: "0xABCDABCDABCDABCDABCDABCDABCDABCDABCDABCD",
-    metadata: {
-      agentName: "VAEB-Prover-Multi-02",
-      supportedChains: ["base", "ethereum"],
-      proofType: "groth16",
-      avgProofTime: "4100ms",
-      x402Pricing: "0.015 USDC per proof",
-    },
-    reputation: { avgScore: 8.7, feedbackCount: 423, tags: { swap: 300, stake: 123 } },
-    validation: { validationCount: 98, passRate: 0.99 },
-  },
-  {
-    agentId: 115,
-    name: "VAEB-Prover-Fast-03",
-    owner: "0x5678567856785678567856785678567856785678",
-    metadata: {
-      agentName: "VAEB-Prover-Fast-03",
-      supportedChains: ["base"],
-      proofType: "groth16",
-      avgProofTime: "1800ms",
-      x402Pricing: "0.03 USDC per proof",
-    },
-    reputation: { avgScore: 6.1, feedbackCount: 89, tags: { swap: 70, transfer: 19 } },
-    validation: { validationCount: 22, passRate: 0.91 },
-  },
-  {
-    agentId: 203,
-    name: "VAEB-Prover-New-04",
-    owner: "0x9999999999999999999999999999999999999999",
-    metadata: {
-      agentName: "VAEB-Prover-New-04",
-      supportedChains: ["base", "ethereum", "solana"],
-      proofType: "groth16",
-      avgProofTime: "2500ms",
-      x402Pricing: "0.01 USDC per proof",
-    },
-    reputation: { avgScore: 9.5, feedbackCount: 12, tags: { swap: 12 } },
-    validation: { validationCount: 3, passRate: 1.0 },
+    agentId: 2,
+    agentURI: "https://vaeb.xyz/agent-2",
+    owner: "0x1234567890123456789012345678901234567890",
+    metadata: { name: "VAEB-Agent-2", proofType: "groth16", avgProofTime: "4100ms" },
+    reputation: { count: 423n, summaryValue: 870n, decimals: 2, clients: [] as string[] },
+    validation: { count: 98n, avgResponse: 97 },
   },
 ];
 
@@ -110,13 +137,13 @@ export const trustTools = {
       case "discover_agents":
         return discoverAgents(args, config);
       case "get_agent_reputation":
-        return getAgentReputation(args);
+        return getAgentReputation(args, config);
       case "get_agent_validations":
-        return getAgentValidations(args);
+          return getAgentValidations(args, config);
       case "post_feedback":
         return postFeedback(args, config);
       case "compare_agents":
-        return compareAgents(args);
+        return compareAgents(args, config);
       default:
         throw new Error(`Unknown trust tool: ${name}`);
     }
@@ -127,171 +154,352 @@ export const trustTools = {
 
 async function discoverAgents(args: any, config: Config) {
   const chainKey = args.chain || config.defaultChain;
-  const operation = args.operation || "";
   const minReputation = args.min_reputation || 0;
+  const contracts = getContracts(chainKey);
 
-  // Filter agents by criteria
-  let candidates = DEMO_AGENTS.filter((a) => {
-    if (minReputation > 0 && a.reputation.avgScore < minReputation) return false;
-    if (chainKey) {
-      // Strip network suffix (e.g. "base_sepolia" → "base", "ethereum_sepolia" → "ethereum")
-      const chainBase = chainKey.replace(/_sepolia$/, "").replace(/_mainnet$/, "");
-      if (!a.metadata.supportedChains.some((c) => c.toLowerCase().includes(chainBase))) {
-        return false;
+  let agents: any[] = [];
+  let source: "on-chain" | "demo" = "on-chain";
+
+  if (contracts) {
+    try {
+      // scan IDs 1-100
+      const MAX_AGENT_ID_SCAN = 100;
+      const ids = Array.from({ length: MAX_AGENT_ID_SCAN }, (_, i) => i + 1);
+
+      const results = await Promise.allSettled(
+        ids.map(async (id) => {
+          const [owner, uri] = await Promise.all([
+            contracts.identity.ownerOf(id),
+            contracts.identity.tokenURI(id).catch(() => ""),
+          ]);
+          return { agentId: id, owner, agentURI: uri };
+        })
+      );
+
+      // filter out rejected calls (agent ID doesn't exist)
+      agents = results
+        .filter((r): r is PromiseFulfilledResult<any> => r.status === "fulfilled")
+        .map((r) => r.value);
+
+      if (agents.length === 0) {
+        source = "demo";
+        agents = DEMO_AGENTS;
       }
+    } catch {
+      // if failure fall back to demo agents
+      source = "demo";
+      agents = DEMO_AGENTS;
     }
-    return true;
+  } else {
+    source = "demo";
+    agents = DEMO_AGENTS;
+  }
+
+  // fetch reputation data
+  const enriched = await Promise.all(
+    agents.map(async (a) => {
+      const rep = await fetchReputation(a.agentId, chainKey, contracts).catch(() => null);
+      return { ...a, reputation: rep };
+    })
+  );
+
+  // filter and score
+  const filtered = enriched.filter((a) => {
+    if (!a.reputation) return minReputation === 0;
+    const score = normalizedScore(a.reputation);
+    return score >= minReputation;
   });
 
-  // Score and rank
-  const scored = candidates.map((a) => ({
-    ...a,
-    compositeScore: computeCompositeScore(a),
-  })).sort((a, b) => b.compositeScore - a.compositeScore);
+  const scored = filtered
+    .map((a) => ({ ...a, compositeScore: computeCompositeScore(a.reputation) }))
+    .sort((a, b) => b.compositeScore - a.compositeScore);
 
   const recommended = scored[0];
   const alternatives = scored.slice(1);
 
   return {
-    recommended: recommended
-      ? {
-          agent_id: recommended.agentId,
-          name: recommended.name,
-          reputation: {
-            score: recommended.reputation.avgScore,
-            feedbacks: recommended.reputation.feedbackCount,
-            validation_rate: recommended.validation.passRate,
-          },
-          pricing: recommended.metadata.x402Pricing,
-          avg_proof_time: recommended.metadata.avgProofTime,
-          composite_score: recommended.compositeScore.toFixed(2),
-        }
-      : null,
-    alternatives: alternatives.map((a) => ({
-      agent_id: a.agentId,
-      name: a.name,
-      score: a.reputation.avgScore,
-      feedbacks: a.reputation.feedbackCount,
-      composite_score: a.compositeScore.toFixed(2),
-    })),
-    query: { chain: chainKey, operation, min_reputation: minReputation },
+    source,
+    recommended: recommended ? formatAgent(recommended) : null,
+    alternatives: alternatives.map(formatAgent),
+    query: { chain: chainKey, min_reputation: minReputation },
     total_agents_found: scored.length,
   };
 }
 
 // ─── get_agent_reputation ───────────────────────────────────────
 
-async function getAgentReputation(args: any) {
-  const agent = DEMO_AGENTS.find((a) => a.agentId === args.agent_id);
-  if (!agent) throw new Error(`Agent not found: ${args.agent_id}`);
+async function getAgentReputation(args: any, config: Config) {
+  const chainKey = args.chain || config.defaultChain;
+  const agentId: number = args.agent_id;
+  const contracts = getContracts(chainKey);
 
-  return {
-    agent_id: agent.agentId,
-    name: agent.name,
-    reputation: {
-      avg_score: agent.reputation.avgScore,
-      feedback_count: agent.reputation.feedbackCount,
-      tags: agent.reputation.tags,
-      trust_tier: getTrustTier(agent.reputation.avgScore, agent.reputation.feedbackCount),
-    },
-    metadata: agent.metadata,
-  };
+  if (contracts) {
+    try {
+      const [owner, uri] = await Promise.all([
+        contracts.identity.ownerOf(agentId),
+        contracts.identity.tokenURI(agentId).catch(() => ""),
+      ]);
+
+      const rep = await fetchReputation(agentId, chainKey, contracts);
+
+      return {
+        source: "on-chain",
+        agent_id: agentId,
+        owner,
+        agent_uri: uri,
+        reputation: formatReputation(rep),
+      };
+    } catch (err: any) {
+      // fall back to demo
+      console.error(`[getAgentReputation] On-chain fetch failed for agent ${agentId}:`, err.message);
+      const demo = DEMO_AGENTS.find((a) => a.agentId === agentId);
+      if (!demo) throw new Error(`Agent ${agentId} not found on-chain or in demo data. Original error: ${err.message}`);
+      return {
+        source: "demo",
+        agent_id: demo.agentId,
+        owner: demo.owner,
+        agent_uri: demo.agentURI,
+        reputation: formatReputation(demo.reputation),
+      };
+    }
+  } else {
+    const demo = DEMO_AGENTS.find((a) => a.agentId === agentId);
+    if (!demo) throw new Error(`Agent ${agentId} not found`);
+    return {
+      source: "demo",
+      agent_id: demo.agentId,
+      owner: demo.owner,
+      agent_uri: demo.agentURI,
+      reputation: formatReputation(demo.reputation),
+    };
+  }
 }
 
 // ─── get_agent_validations ──────────────────────────────────────
 
-async function getAgentValidations(args: any) {
-  const agent = DEMO_AGENTS.find((a) => a.agentId === args.agent_id);
-  if (!agent) throw new Error(`Agent not found: ${args.agent_id}`);
+async function getAgentValidations(args: any, config: Config) {
+  const chainKey = args.chain || config.defaultChain;
+  const agentId: number = args.agent_id;
+  const contracts = getContracts(chainKey);
 
+  if (contracts?.validation) {
+    try {
+      const hashes: string[] = await contracts.validation.getAgentValidations(agentId);
+      const statuses = await Promise.allSettled(
+        hashes.map((h) => contracts.validation!.getValidationStatus(h))
+      );
+
+      const resolved = statuses
+        .filter((r): r is PromiseFulfilledResult<any> => r.status === "fulfilled")
+        .map((r, i) => ({
+          request_hash: hashes[i],
+          validator: r.value.validatorAddress,
+          response: r.value.response,
+          tag: r.value.tag,
+          last_update: new Date(Number(r.value.lastUpdate) * 1000).toISOString(),
+          has_response: r.value.hasResponse,
+        }));
+
+      const passCount = resolved.filter((v) => v.response >= 50).length;
+
+      return {
+        source: "on-chain",
+        agent_id: agentId,
+        total_validations: resolved.length,
+        pass_count: passCount,
+        fail_count: resolved.length - passCount,
+        pass_rate: resolved.length > 0
+          ? ((passCount / resolved.length) * 100).toFixed(1) + "%"
+          : "N/A",
+        validations: resolved,
+      };
+    } catch {
+      // Fall through to demo
+    }
+  }
+
+  // Fallback
+  const demo = DEMO_AGENTS.find((a) => a.agentId === agentId);
+  if (!demo) throw new Error(`Agent ${agentId} not found`);
   return {
-    agent_id: agent.agentId,
-    name: agent.name,
-    validation: {
-      total_validations: agent.validation.validationCount,
-      pass_rate: (agent.validation.passRate * 100).toFixed(1) + "%",
-      pass_count: Math.round(agent.validation.validationCount * agent.validation.passRate),
-      fail_count: Math.round(agent.validation.validationCount * (1 - agent.validation.passRate)),
-    },
+    source: "demo",
+    agent_id: demo.agentId,
+    total_validations: Number(demo.validation.count),
+    pass_count: Math.round(Number(demo.validation.count) * demo.validation.avgResponse / 100),
+    fail_count: Math.round(Number(demo.validation.count) * (1 - demo.validation.avgResponse / 100)),
+    pass_rate: demo.validation.avgResponse.toFixed(1) + "%",
+    validations: [],
   };
 }
 
 // ─── post_feedback ──────────────────────────────────────────────
+// need to set config.signerPrivateKey for this
 
 async function postFeedback(args: any, config: Config) {
-  const agent = DEMO_AGENTS.find((a) => a.agentId === args.agent_id);
-  if (!agent) throw new Error(`Agent not found: ${args.agent_id}`);
+  const chainKey = args.chain || config.defaultChain;
+  const agentId: number = args.agent_id;
 
-  // In production: call ReputationRegistry.giveFeedback() on-chain
-  // with feedbackAuth signature to prevent spam
+  // value is an integer score 0–100
+  const value: number = Math.max(0, Math.min(100, Math.round(args.score ?? 50)));
+  const tag1: string = args.tag1 ?? "";
+  const tag2: string = args.tag2 ?? "";
+  const feedbackURI: string = args.feedback_uri ?? "";
+  const feedbackHash: string = args.feedback_hash
+    ?? ethers.keccak256(ethers.toUtf8Bytes(`${agentId}-${value}-${Date.now()}`));
+  const endpoint: string = args.endpoint ?? "";
+
+  if (!config.signerPrivateKey) {
+    return {
+      posted: false,
+      note: "No signer key configured. Set AGENT_PRIVATE_KEY in .env.",
+      agent_id: agentId,
+      score: value,
+    };
+  }
+
+  const addrs = ERC8004_ADDRESSES[chainKey];
+  const provider = getProvider(chainKey);
+  if (!addrs || !provider) {
+    throw new Error(`Chain ${chainKey} not configured`);
+  }
+
+  const signer = new ethers.Wallet(config.signerPrivateKey, provider);
+  const rep = new ethers.Contract(addrs.reputationRegistry, REPUTATION_REGISTRY_ABI, signer);
+
+  const tx = await rep.giveFeedback(
+    agentId,
+    value,
+    0,
+    tag1,
+    tag2,
+    endpoint,
+    feedbackURI,
+    feedbackHash
+  );
+  const receipt = await tx.wait();
 
   return {
-    agent_id: args.agent_id,
-    feedback_posted: true,
-    score: args.score,
-    tags: [args.tag1, args.tag2].filter(Boolean),
-    receipt_uri: args.receipt_uri || "ipfs://Qm.../receipt.json",
-    note: "Feedback recorded. Agent reputation will be updated on next query.",
-    tx_hash: ethers.keccak256(
-      ethers.toUtf8Bytes(`feedback-${args.agent_id}-${Date.now()}`)
-    ),
+    posted: true,
+    agent_id: agentId,
+    score: value,
+    tags: [tag1, tag2].filter(Boolean),
+    tx_hash: receipt.hash,
+    block: receipt.blockNumber,
+    explorer: `${CHAINS[chainKey]?.blockExplorer}/tx/${receipt.hash}`,
   };
 }
 
 // ─── compare_agents ─────────────────────────────────────────────
 
-async function compareAgents(args: any) {
-  const agentIds = args.agent_ids || [];
-  const agents = agentIds
-    .map((id: number) => DEMO_AGENTS.find((a) => a.agentId === id))
-    .filter(Boolean);
+async function compareAgents(args: any, config: Config) {
+  const chainKey = args.chain || config.defaultChain;
+  const agentIds: number[] = args.agent_ids ?? [];
+  if (agentIds.length === 0) throw new Error("agent_ids must be a non-empty array");
+
+  const results = await Promise.allSettled(
+    agentIds.map((id) => getAgentReputation({ agent_id: id, chain: chainKey }, config))
+  );
+
+  const agents = results
+    .filter((r): r is PromiseFulfilledResult<any> => r.status === "fulfilled")
+    .map((r) => r.value);
 
   if (agents.length === 0) throw new Error("No agents found for comparison");
 
+  const scored = agents
+    .map((a) => ({
+      ...a,
+      compositeScore: computeCompositeScore(a.reputation?._raw),
+    }))
+    .sort((a, b) => b.compositeScore - a.compositeScore);
+
   return {
-    agents: agents.map((a: any) => ({
-      agent_id: a.agentId,
-      name: a.name,
-      reputation_score: a.reputation.avgScore,
-      feedback_count: a.reputation.feedbackCount,
-      validation_rate: (a.validation.passRate * 100).toFixed(1) + "%",
-      validations: a.validation.validationCount,
-      trust_tier: getTrustTier(a.reputation.avgScore, a.reputation.feedbackCount),
-      pricing: a.metadata.x402Pricing,
-      avg_proof_time: a.metadata.avgProofTime,
-      supported_chains: a.metadata.supportedChains,
-      composite_score: computeCompositeScore(a).toFixed(2),
+    agents: scored.map((a) => ({
+      agent_id: a.agent_id,
+      owner: a.owner,
+      reputation_score: a.reputation?.normalized_score,
+      feedback_count: a.reputation?.feedback_count,
+      trust_tier: a.reputation?.trust_tier,
+      composite_score: a.compositeScore.toFixed(2),
     })),
-    recommendation: agents.sort(
-      (a: any, b: any) => computeCompositeScore(b) - computeCompositeScore(a)
-    )[0]?.agentId,
+    recommendation: scored[0]?.agent_id,
   };
 }
 
-// ─── Helper: Composite Trust Score ──────────────────────────────
+// helpers
 
-function computeCompositeScore(agent: any): number {
-  const repWeight = 0.4;
-  const feedbackWeight = 0.2;
-  const validationWeight = 0.3;
-  const validationCountWeight = 0.1;
+// fetch reputation data for an agent
+async function fetchReputation(agentId: number, _chainKey: string, contracts: ReturnType<typeof getContracts>) {
+  if (!contracts) throw new Error("no contracts");
 
-  const normalizedFeedback = Math.min(agent.reputation.feedbackCount / 2000, 1);
-  const normalizedValidationCount = Math.min(agent.validation.validationCount / 500, 1);
+  const clientsResult = await contracts.reputation.getClients(agentId);
+  // Convert to plain array - ethers.js returns a Result object
+  const clients: string[] = Array.from(clientsResult);
 
-  return (
-    agent.reputation.avgScore * repWeight +
-    normalizedFeedback * 10 * feedbackWeight +
-    agent.validation.passRate * 10 * validationWeight +
-    normalizedValidationCount * 10 * validationCountWeight
-  );
+  // getSummary with empty tag filter returns aggregated score across all feedback
+  const result = await contracts.reputation.getSummary(agentId, clients, "", "");
+  const count = result[0];
+  const summaryValue = result[1];
+  const summaryDecimals = result[2];
+
+  return {
+    count,
+    summaryValue,
+    decimals: Number(summaryDecimals),
+    clients,
+  };
+}
+
+// convert on-chain summaryValue/decimals to a 0–100 score
+function normalizedScore(rep: { summaryValue: bigint; decimals: number; count: bigint }): number {
+  if (rep.count === 0n) return 0;
+  const divisor = Math.pow(10, rep.decimals);
+  return Number(rep.summaryValue) / divisor;
 }
 
 // ─── Helper: Trust Tier ─────────────────────────────────────────
 
-function getTrustTier(score: number, feedbacks: number): string {
-  if (score >= 9 && feedbacks >= 1000) return "ELITE";
-  if (score >= 7 && feedbacks >= 500) return "ESTABLISHED";
-  if (score >= 5 && feedbacks >= 50) return "EMERGING";
+function getTrustTier(score: number, count: bigint): string {
+  const n = Number(count);
+  if (score >= 90 && n >= 1000) return "ELITE";
+  if (score >= 70 && n >= 500)  return "ESTABLISHED";
+  if (score >= 50 && n >= 50)   return "EMERGING";
   return "UNTRUSTED";
+}
+
+// ─── Helper: Composite Trust Score ──────────────────────────────
+
+function computeCompositeScore(rep: any): number {
+  if (!rep) return 0;
+  const count = Number(rep.count ?? 0n);
+  const score = normalizedScore(rep);
+  const normalizedCount = Math.min(count / 2000, 1);
+  return score * 0.6 + normalizedCount * 100 * 0.4;
+}
+
+function formatReputation(rep: any) {
+  if (!rep) return null;
+  const score = normalizedScore(rep);
+  const count = Number(rep.count ?? 0n);
+  return {
+    normalized_score: score.toFixed(2),
+    feedback_count: count,
+    trust_tier: getTrustTier(score, rep.count ?? 0n),
+    clients: (rep.clients ?? []).map((c: string) => c),
+    _raw: rep,
+  };
+}
+
+function formatAgent(a: any) {
+  return {
+    agent_id: a.agentId,
+    owner: a.owner,
+    agent_uri: a.agentURI,
+    reputation: a.reputation ? {
+      score: normalizedScore(a.reputation).toFixed(2),
+      feedback_count: Number(a.reputation.count ?? 0n),
+      trust_tier: getTrustTier(normalizedScore(a.reputation), a.reputation.count ?? 0n),
+    } : null,
+    composite_score: a.compositeScore?.toFixed(2) ?? "0.00",
+  };
 }

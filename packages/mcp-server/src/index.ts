@@ -27,6 +27,9 @@ const chainContracts  = chainDeployment.contracts  || {};
 
 const config = {
   walletPrivateKey:    process.env.AGENT_PRIVATE_KEY || process.env.WALLET_PRIVATE_KEY || "",
+  // Used by post_feedback to sign on-chain ERC-8004 reputation submissions.
+  // Can be the same key as WALLET_PRIVATE_KEY or a dedicated agent key.
+  signerPrivateKey: process.env.AGENT_PRIVATE_KEY || process.env.WALLET_PRIVATE_KEY || "",
   supportedChains:     (process.env.SUPPORTED_CHAINS || "base_sepolia").split(","),
   defaultChain,
   x402Facilitator:     process.env.X402_FACILITATOR         || "https://x402.coinbase.com",

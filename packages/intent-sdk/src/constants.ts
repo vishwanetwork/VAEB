@@ -81,22 +81,22 @@ export const CHAINS: Record<string, ChainConfig> = {
 export const ERC8004_ADDRESSES: Record<string, {
   identityRegistry: string;
   reputationRegistry: string;
-  validationRegistry: string;
+  validationRegistry: string | null;
 }> = {
   base_sepolia: {
-    identityRegistry: "0x7177000000000000000000000000000000000009A",  // Placeholder — update with actual
-    reputationRegistry: "0xB504000000000000000000000000000000000322", // Placeholder — update with actual
-    validationRegistry: "0x662b0000000000000000000000000000000006d8", // Placeholder — update with actual
+    identityRegistry:   "0x8004A818BFB912233c491871b3d84c89A494BD9e",
+    reputationRegistry: "0x8004B663056A597Dffe9eCcC1965A193B7388713",
+    validationRegistry: null,
   },
   ethereum_sepolia: {
-    identityRegistry: "0x7177000000000000000000000000000000000009A",
-    reputationRegistry: "0xB504000000000000000000000000000000000322",
-    validationRegistry: "0x662b0000000000000000000000000000000006d8",
+    identityRegistry:   "0x8004A818BFB912233c491871b3d84c89A494BD9e",
+    reputationRegistry: "0x8004B663056A597Dffe9eCcC1965A193B7388713",
+    validationRegistry: null,
   },
   ethereum_mainnet: {
-    identityRegistry: "0x8004A1000000000000000000000000000000000432",
-    reputationRegistry: "0x8004B2000000000000000000000000000000000000",
-    validationRegistry: "0x0000000000000000000000000000000000000000",
+    identityRegistry:   "0x8004A169FB4a3325136EB29fA0ceB6D2e539a4320",
+    reputationRegistry: "0x8004BAa17C55a88189AE136b182e5fdA19dE9b63",
+    validationRegistry: null,
   },
 };
 
