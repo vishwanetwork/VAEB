@@ -243,6 +243,7 @@ async function cancelIntent(args: any, _config: Config) {
   const stored = intentStore.get(args.intent_id);
   if (!stored) throw new Error(`Intent not found: ${args.intent_id}`);
   if (stored.status === "executed") throw new Error("Cannot cancel executed intent");
+  if (stored.status === "cancelled") throw new Error("Intent already cancelled");
 
   stored.status = "cancelled";
 

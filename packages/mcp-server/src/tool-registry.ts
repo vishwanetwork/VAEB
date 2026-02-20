@@ -201,6 +201,64 @@ export function getToolDefinitions() {
       },
     },
 
+    // ─── Wallet Tools (AgentWalletFactory) ──────────────────────
+
+    {
+      name: "create_wallet",
+      description:
+        "Deploy a new AgentWallet contract for a user via AgentWalletFactory. The wallet is owned by the provided address (user's MetaMask) and operated by the VAEB agent EOA. Uses CREATE2 for a deterministic address. Provide salt_index to deploy multiple wallets for the same owner.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          owner: {
+            type: "string",
+            description: "Owner address (user's MetaMask wallet address, e.g. 0x...)",
+          },
+          salt_index: {
+            type: "number",
+            description: "Index for deterministic salt derivation (default: 0). Increment to deploy additional wallets for the same owner.",
+          },
+        },
+        required: ["owner"],
+      },
+    },
+
+    {
+      name: "predict_wallet",
+      description:
+        "Predict the CREATE2 address of an AgentWallet before deployment. Free read-only call. Use this to show the user their future wallet address before calling create_wallet.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          owner: {
+            type: "string",
+            description: "Owner address to predict wallet for",
+          },
+          salt_index: {
+            type: "number",
+            description: "Salt index (must match what you plan to use in create_wallet, default: 0)",
+          },
+        },
+        required: ["owner"],
+      },
+    },
+
+    {
+      name: "get_wallets",
+      description:
+        "List all AgentWallet contracts deployed for a given owner address via the factory. Returns wallet addresses and block explorer links.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          owner: {
+            type: "string",
+            description: "Owner address to look up wallets for",
+          },
+        },
+        required: ["owner"],
+      },
+    },
+
     // ─── Trust Tools (ERC-8004) ─────────────────────────────────
 
     {

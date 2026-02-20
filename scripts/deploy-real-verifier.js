@@ -31,8 +31,8 @@ const RPC_URL   = process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org"
 const AGENT_WALLET_ADDRESS =
   process.env.AGENT_WALLET_ADDRESS || "0x99D238c22499e679e9d45578245083FE690C8B5f";
 
-const outDir        = path.join(__dirname, "..", "contracts", "out");
-const deploymentPath = path.join(__dirname, "..", "contracts", "deployments", "base_sepolia.json");
+const outDir          = path.join(__dirname, "..", "contracts", "out");
+const deploymentsFile = path.join(__dirname, "..", "contracts", "deployments", "deployments.json");
 
 // ─── Artifact loader (matches solcjs naming conventions) ─────────
 
@@ -113,14 +113,16 @@ async function main() {
   console.log(`   ✅ setZkVerifier tx:        ${tx.hash}`);
   console.log(`   Block:                      ${receipt.blockNumber}`);
 
-  // ── 4. Update deployment JSON ─────────────────────────────────
-  console.log("4. Updating contracts/deployments/base_sepolia.json...");
-  const deployment = JSON.parse(fs.readFileSync(deploymentPath, "utf8"));
-  deployment.contracts.Groth16Verifier        = verifierAddress;
-  deployment.contracts.Groth16VerifierAdapter = adapterAddress;
-  deployment.timestamp = new Date().toISOString();
-  fs.writeFileSync(deploymentPath, JSON.stringify(deployment, null, 2));
-  console.log(`   ✅ Deployment JSON updated`);
+  // ── 4. Update deployments.json ────────────────────────────────
+  console.log("4. Updating contracts/deployments/deployments.json...");
+  const chainKey   = process.env.DEFAULT_CHAIN || "base_sepolia";
+  const deployments = JSON.parse(fs.readFileSync(deploymentsFile, "utf8"));
+  if (!deployments[chainKey]) deployments[chainKey] = { contracts: {} };
+  deployments[chainKey].contracts.Groth16Verifier        = verifierAddress;
+  deployments[chainKey].contracts.Groth16VerifierAdapter = adapterAddress;
+  deployments[chainKey].timestamp = new Date().toISOString();
+  fs.writeFileSync(deploymentsFile, JSON.stringify(deployments, null, 2));
+  console.log(`   ✅ deployments.json updated`);
 
   console.log(`
 ╔══════════════════════════════════════════════════════════╗
