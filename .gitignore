@@ -15,9 +15,6 @@ contracts/out/
 # Package build outputs (regenerable via npm run build)
 packages/*/dist/
 
-# Deployment results (generated per-run)
-contracts/deployments/
-
 # OS files
 .DS_Store
 Thumbs.db

@@ -38,7 +38,7 @@ import { getToolDefinitions } from "./tool-registry";
 // ─── Environment Configuration ──────────────────────────────────
 
 const config = {
-  walletPrivateKey: process.env.WALLET_PRIVATE_KEY || "",
+  walletPrivateKey: process.env.AGENT_PRIVATE_KEY || process.env.WALLET_PRIVATE_KEY || "",
   supportedChains: (process.env.SUPPORTED_CHAINS || "base_sepolia").split(","),
   defaultChain: process.env.DEFAULT_CHAIN || "base_sepolia",
   x402Facilitator: process.env.X402_FACILITATOR || "https://x402.coinbase.com",
@@ -46,6 +46,12 @@ const config = {
   maxDailySpend: process.env.X402_MAX_DAILY_SPEND || "5.00",
   proverEndpoint: process.env.PROVER_ENDPOINT || "http://localhost:3001",
   requireManualApproval: process.env.REQUIRE_MANUAL_APPROVAL === "true",
+  rpcUrl: process.env.BASE_SEPOLIA_RPC_URL || "https://sepolia.base.org",
+  chainId: parseInt(process.env.CHAIN_ID || "84532"),
+  contracts: {
+    AgentWallet: process.env.AGENT_WALLET_ADDRESS || "0x99D238c22499e679e9d45578245083FE690C8B5f",
+    MockUSDC: process.env.MOCK_USDC_ADDRESS || "0x93560481FE085E4Fd1A0f0bAb2E625118A67aC1D",
+  },
 };
 
 // ─── Create MCP Server ──────────────────────────────────────────
@@ -80,7 +86,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     let result: any;
 
     // Chain Tools (free)
-    if (["read_balance", "get_price", "estimate_gas", "get_receipt"].includes(name)) {
+    if (["get_wallet_balance", "check_nonce", "read_balance", "get_price", "estimate_gas", "get_receipt"].includes(name)) {
       result = await chainTools.handle(name, args || {}, config);
     }
     // Intent Tools (paid via x402)

@@ -12,6 +12,33 @@ export function getToolDefinitions() {
     // ─── Chain Tools (Free) ─────────────────────────────────────
 
     {
+      name: "get_wallet_balance",
+      description:
+        "Get the configured AgentWallet ETH and USDC balances. Call this FIRST before creating any intent to verify sufficient funds for gas and the transaction.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {},
+        required: [],
+      },
+    },
+
+    {
+      name: "check_nonce",
+      description:
+        "Check if a nonce has already been used on-chain. Call this after create_intent and before execute_intent to verify the nonce is still fresh and safe to execute.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          nonce: {
+            type: "string",
+            description: "bytes32 hex nonce from the create_intent bundle response",
+          },
+        },
+        required: ["nonce"],
+      },
+    },
+
+    {
       name: "read_balance",
       description:
         "Read the token balance of a wallet on a supported chain. Returns balance in human-readable format.",
