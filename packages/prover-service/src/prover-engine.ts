@@ -275,7 +275,6 @@ export class ProverEngine {
       derivedTargets,
       derivedValues,
       derivedDataHashes,
-      numDerivedCalls: calls.length.toString(),
     };
   }
 }

@@ -6,7 +6,7 @@ export const CONFIG = {
   rpcUrl: 'https://sepolia.base.org',
   explorer: 'https://sepolia.basescan.org',
   contracts: {
-    AgentWallet: '0x4D7c95c0dd8840CD597DF7D75fb2D7ADc08bA0AA',
-    MockUSDC: '0xE66D20A340e3F45C55d3A7cfB6b25458d9b0d193',
+    AgentWallet: '0x99D238c22499e679e9d45578245083FE690C8B5f',
+    MockUSDC: '0x93560481FE085E4Fd1A0f0bAb2E625118A67aC1D',
   },
 };

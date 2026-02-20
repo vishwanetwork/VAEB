@@ -1,26 +1,6 @@
 #!/usr/bin/env node
 /**
  * @vaeb/mcp-server — MCP Server for Verified Agent Execution Bundle
- *
- * This is the "front door" of VAEB. Any AI agent (Claude, GPT, custom agent SDK,
- * A2A peer, autonomous trading bot) can discover VAEB's capabilities through
- * standard MCP tool listings.
- *
- * Tools:
- *   Free (no x402 payment):
- *     - read_balance    — Read token balance on any supported chain
- *     - get_price       — Get token price across chains/DEXs
- *     - estimate_gas    — Estimate gas for an operation
- *     - get_receipt     — Get transaction receipt by hash
- *     - discover_agents — Discover agents via ERC-8004 IdentityRegistry
- *     - get_agent_reputation — Query agent reputation from ERC-8004
- *
- *   Paid (x402 micropayment):
- *     - create_intent   — Construct an IntentBundle from high-level actions
- *     - execute_intent  — Execute a signed intent with ZK proof
- *     - simulate_intent — Dry-run an intent via eth_call
- *     - cancel_intent   — Invalidate a nonce
- *     - post_feedback   — Post execution feedback to ERC-8004
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -32,16 +12,14 @@ import { chainTools } from "./tools/chain-tools";
 import { intentTools } from "./tools/intent-tools";
 import { walletTools } from "./tools/wallet-tools";
 import { trustTools } from "./tools/trust-tools";
+import { marketplaceTools } from "./tools/marketplace-tools";
+import { verifyTools } from "./tools/verify-tools";
 import { getToolDefinitions } from "./tool-registry";
-
-// ─── Load on-chain deployments (keyed by chain name) ────────────
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const DEPLOYMENTS = require(
   path.join(__dirname, "../../../contracts/deployments/deployments.json")
 );
-
-// ─── Environment Configuration ──────────────────────────────────
 
 const defaultChain    = process.env.DEFAULT_CHAIN || "base_sepolia";
 const chainDeployment = DEPLOYMENTS[defaultChain] || {};
@@ -69,8 +47,6 @@ const config = {
   },
 };
 
-// ─── JSON Schema → Zod shape converter ──────────────────────────
-
 type JsonSchemaProp = {
   type: string;
   description?: string;
@@ -80,30 +56,16 @@ type JsonSchemaProp = {
 
 function jsonPropToZod(prop: JsonSchemaProp, isRequired: boolean): z.ZodTypeAny {
   let zType: z.ZodTypeAny;
-
   switch (prop.type) {
-    case "string":
-      zType = prop.enum ? z.enum(prop.enum as [string, ...string[]]) : z.string();
-      break;
-    case "number":
-      zType = z.number();
-      break;
-    case "boolean":
-      zType = z.boolean();
-      break;
-    case "array":
-      zType = prop.items ? z.array(jsonPropToZod(prop.items, true)) : z.array(z.any());
-      break;
-    case "object":
-      zType = z.record(z.any());
-      break;
-    default:
-      zType = z.any();
+    case "string":  zType = prop.enum ? z.enum(prop.enum as [string, ...string[]]) : z.string(); break;
+    case "number":  zType = z.number(); break;
+    case "boolean": zType = z.boolean(); break;
+    case "array":   zType = prop.items ? z.array(jsonPropToZod(prop.items, true)) : z.array(z.any()); break;
+    case "object":  zType = z.record(z.any()); break;
+    default:        zType = z.any();
   }
-
   if (prop.description) zType = zType.describe(prop.description);
   if (!isRequired) zType = zType.optional();
-
   return zType;
 }
 
@@ -118,8 +80,6 @@ function buildZodShape(
   return shape;
 }
 
-// ─── Tool routing ────────────────────────────────────────────────
-
 async function routeTool(name: string, args: Record<string, unknown>) {
   if (["get_wallet_balance", "check_nonce", "read_balance", "get_price", "estimate_gas", "get_receipt"].includes(name)) {
     return await chainTools.handle(name, args, config);
@@ -133,17 +93,22 @@ async function routeTool(name: string, args: Record<string, unknown>) {
   if (["discover_agents", "get_agent_reputation", "get_agent_validations", "post_feedback", "compare_agents"].includes(name)) {
     return await trustTools.handle(name, args, config);
   }
+  if (["search_marketplace", "hire_human", "execute_payment"].includes(name)) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const out = await marketplaceTools.handle(name, args as any, config as any);
+    return out.result;
+  }
+  if (["prove_intent", "verify_proof"].includes(name)) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return await verifyTools.handle(name, args as any, config as any);
+  }
   throw new Error(`Unknown tool: ${name}`);
 }
-
-// ─── Create MCP Server ──────────────────────────────────────────
 
 const server = new McpServer({
   name: "@vaeb/mcp-agent-execution",
   version: "0.1.0",
 });
-
-// ─── Register Tools ─────────────────────────────────────────────
 
 for (const tool of getToolDefinitions()) {
   const properties = (tool.inputSchema.properties || {}) as Record<string, JsonSchemaProp>;
@@ -163,22 +128,12 @@ for (const tool of getToolDefinitions()) {
 
   if (hasParams) {
     const zodShape = buildZodShape(properties, required);
-    server.registerTool(
-      tool.name,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      { description: tool.description, inputSchema: zodShape as any },
-      makeHandler(tool.name, true),
-    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    server.registerTool(tool.name, { description: tool.description, inputSchema: zodShape as any }, makeHandler(tool.name, true));
   } else {
-    server.registerTool(
-      tool.name,
-      { description: tool.description },
-      makeHandler(tool.name, false),
-    );
+    server.registerTool(tool.name, { description: tool.description }, makeHandler(tool.name, false));
   }
 }
-
-// ─── Start Server ───────────────────────────────────────────────
 
 async function main() {
   const transport = new StdioServerTransport();

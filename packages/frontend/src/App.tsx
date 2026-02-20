@@ -1,21 +1,24 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { ethers } from 'ethers';
 import { CONFIG } from './config';
-import { fetchBalances, reviewIntent, executeIntent, ReviewResponse, ExecuteResponse } from './api';
+import { fetchBalances, sendChatMessage, executeChatIntent, ChatResponse, ExecuteResponse, ToolCallInfo } from './api';
 
 // ── Types ─────────────────────────────────────────────────────
 
-type FlowStep = 'idle' | 'reviewing' | 'signing' | 'executing' | 'confirmed' | 'error';
-
-interface WalletBalances {
-  eth: string;
-  usdc: string;
-  address: string;
+interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  text: string;
+  toolCalls?: ToolCallInfo[];
+  intent?: ChatResponse['intent'];
+  txResult?: ExecuteResponse;
+  signing?: boolean;
+  execStep?: number; // 0=signing, 1=executing
 }
 
-interface Balances {
-  user: WalletBalances;
-  agent: WalletBalances;
+interface WalletBalances {
+  user: { eth: string; usdc: string; address: string };
+  agent: { eth: string; usdc: string; address: string };
 }
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -25,12 +28,32 @@ function truncAddr(addr: string, len = 6): string {
   return addr.slice(0, len + 2) + '...' + addr.slice(-len);
 }
 
-// Extend window for MetaMask
-declare global {
-  interface Window {
-    ethereum?: any;
-  }
+let msgCounter = 0;
+function nextId() {
+  return `msg-${++msgCounter}-${Date.now()}`;
 }
+
+declare global {
+  interface Window { ethereum?: any; }
+}
+
+// Return the MetaMask provider specifically (skips Coinbase Wallet and other injectors)
+function getMetaMask(): any {
+  const eth = (window as any).ethereum;
+  if (!eth) return null;
+  // When multiple wallets are installed, each is listed in eth.providers
+  if (Array.isArray(eth.providers)) {
+    return eth.providers.find((p: any) => p.isMetaMask && !p.isCoinbaseWallet) ?? null;
+  }
+  // Single provider — accept only if it's MetaMask
+  if (eth.isMetaMask && !eth.isCoinbaseWallet) return eth;
+  return null;
+}
+
+const EXEC_STEPS = [
+  { label: 'EIP-712 Signature', desc: 'Requesting signature from wallet...' },
+  { label: 'Backend Execution', desc: 'Submitting to MCP backend for on-chain execution...' },
+];
 
 // ── App ───────────────────────────────────────────────────────
 
@@ -39,42 +62,95 @@ export default function App() {
   const [address, setAddress] = useState<string | null>(null);
   const [signer, setSigner] = useState<ethers.JsonRpcSigner | null>(null);
   const [connected, setConnected] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
 
   // Balances
-  const [balances, setBalances] = useState<Balances | null>(null);
+  const [balances, setBalances] = useState<WalletBalances | null>(null);
 
-  // Intent form
-  const [amount, setAmount] = useState('');
-  const [recipient, setRecipient] = useState('');
+  // Chat
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [sessionId, setSessionId] = useState<string | undefined>();
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [showSuggestions, setShowSuggestions] = useState(false);
 
-  // Flow
-  const [step, setStep] = useState<FlowStep>('idle');
-  const [review, setReview] = useState<ReviewResponse | null>(null);
-  const [result, setResult] = useState<ExecuteResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Auto-scroll
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  // Focus input when connected
+  useEffect(() => {
+    if (connected) inputRef.current?.focus();
+  }, [connected]);
+
+  // ── Send message (defined early so connectWallet can use it) ──
+
+  const sendMessageRef = useRef<(text?: string, showInChat?: boolean) => Promise<void>>();
+
+  const sendMessage = useCallback(async (text?: string, showInChat = true) => {
+    const msg = text || input.trim();
+    if (!msg || !address || loading) return;
+
+    if (showInChat) {
+      const userMsg: ChatMessage = { id: nextId(), role: 'user', text: msg };
+      setMessages(prev => [...prev, userMsg]);
+    }
+    setInput('');
+    setLoading(true);
+    setShowSuggestions(false);
+
+    try {
+      const response = await sendChatMessage(msg, address, sessionId);
+      setSessionId(response.sessionId);
+
+      const assistantMsg: ChatMessage = {
+        id: nextId(),
+        role: 'assistant',
+        text: response.message,
+        toolCalls: response.toolCalls,
+        intent: response.intent,
+      };
+      setMessages(prev => [...prev, assistantMsg]);
+    } catch (err: any) {
+      setMessages(prev => [...prev, {
+        id: nextId(),
+        role: 'system',
+        text: `Error: ${err.message}`,
+      }]);
+    } finally {
+      setLoading(false);
+      inputRef.current?.focus();
+    }
+  }, [input, address, loading, sessionId]);
+
+  sendMessageRef.current = sendMessage;
 
   // ── Connect Wallet ────────────────────────────────────────
 
   const connectWallet = useCallback(async () => {
-    if (!window.ethereum) {
-      alert('Please install MetaMask to use this app.');
+    setConnectError(null);
+    const mm = getMetaMask();
+    if (!mm) {
+      setConnectError('MetaMask not detected. Please install MetaMask.');
       return;
     }
 
     try {
-      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      await mm.request({ method: 'eth_requestAccounts' });
 
-      // Switch to Base Sepolia
-      const chainId = await window.ethereum.request({ method: 'eth_chainId' });
+      const chainId = await mm.request({ method: 'eth_chainId' });
       if (chainId !== CONFIG.chainIdHex) {
         try {
-          await window.ethereum.request({
+          await mm.request({
             method: 'wallet_switchEthereumChain',
             params: [{ chainId: CONFIG.chainIdHex }],
           });
         } catch (switchError: any) {
           if (switchError.code === 4902) {
-            await window.ethereum.request({
+            await mm.request({
               method: 'wallet_addEthereumChain',
               params: [{
                 chainId: CONFIG.chainIdHex,
@@ -90,7 +166,7 @@ export default function App() {
         }
       }
 
-      const provider = new ethers.BrowserProvider(window.ethereum);
+      const provider = new ethers.BrowserProvider(mm);
       const s = await provider.getSigner();
       const addr = await s.getAddress();
 
@@ -98,16 +174,32 @@ export default function App() {
       setAddress(addr);
       setConnected(true);
 
-      // Load balances
-      const bals = await fetchBalances(addr);
-      setBalances(bals);
+      // Show welcome immediately — balance loads in background
+      setMessages([{
+        id: nextId(),
+        role: 'assistant',
+        text: `Welcome! Your agent wallet is ready.\n\nI'm connected to the Rent a Human marketplace — I can find and hire real people to handle physical tasks for you. Groceries, dog walking, deliveries, you name it.\n\nWhat do you need done today?`,
+      }]);
+      setShowSuggestions(true);
 
-      // Listen for changes
-      window.ethereum.on('accountsChanged', () => location.reload());
-      window.ethereum.on('chainChanged', () => location.reload());
-    } catch (err) {
+      // Load balances non-blocking
+      fetchBalances(addr)
+        .then(bals => setBalances(bals))
+        .catch(err => console.error('Balance fetch failed:', err));
+
+      mm.on('accountsChanged', () => location.reload());
+      mm.on('chainChanged', () => location.reload());
+    } catch (err: any) {
       console.error('Connection failed:', err);
+      setConnectError(err?.message || 'Connection failed. Check console for details.');
     }
+  }, []);
+
+  // ── Handle suggestion click ────────────────────────────────
+
+  const handleSuggestion = useCallback((text: string) => {
+    setShowSuggestions(false);
+    sendMessageRef.current?.(text);
   }, []);
 
   // ── Refresh balances ──────────────────────────────────────
@@ -122,349 +214,400 @@ export default function App() {
     }
   }, [address]);
 
-  // ── Review Intent ─────────────────────────────────────────
+  // ── Sign & Execute intent with ZK verification log ─────────
 
-  const handleReview = useCallback(async () => {
-    if (!address) return;
+  const handleApprove = useCallback(async (msgId: string, intent: NonNullable<ChatResponse['intent']>) => {
+    if (!signer) return;
 
-    try {
-      setStep('reviewing');
-      setError(null);
-
-      const data = await reviewIntent({
-        actionType: 'TRANSFER',
-        token: 'USDC',
-        amount,
-        recipient,
-        signerAddress: address,
-      });
-
-      setReview(data);
-    } catch (err: any) {
-      setError(err.message);
-      setStep('error');
-    }
-  }, [address, amount, recipient]);
-
-  // ── Sign & Execute ────────────────────────────────────────
-
-  const handleSignAndExecute = useCallback(async () => {
-    if (!signer || !review) return;
+    // Step 0: Signing
+    setMessages(prev => prev.map(m =>
+      m.id === msgId ? { ...m, execStep: 0, intent: undefined } : m
+    ));
 
     try {
-      // Step: signing
-      setStep('signing');
-      setError(null);
-
-      // Sign EIP-712 typed data via MetaMask
-      const { domain, types, message } = review.eip712;
+      const { domain, types, message } = intent.eip712;
       const signature = await signer.signTypedData(domain, types, message);
 
-      // Step: executing
-      setStep('executing');
+      // Step 1: Backend Execution (real path will be returned by the server)
+      setMessages(prev => prev.map(m =>
+        m.id === msgId ? { ...m, execStep: 1 } : m
+      ));
 
-      const execResult = await executeIntent({
-        reviewId: review.reviewId,
-        signature,
-      });
+      const result = await executeChatIntent(intent.reviewId, signature);
 
-      setResult(execResult);
-      setStep('confirmed');
+      // Step 4: Done — attach result + MCP tool calls from execution
+      setMessages(prev => prev.map(m =>
+        m.id === msgId ? {
+          ...m,
+          execStep: undefined,
+          txResult: result,
+          toolCalls: [...(m.toolCalls || []), ...(result.toolCalls || [])],
+        } : m
+      ));
 
-      // Refresh balances
+      const execNote =
+        result.executionPath === 'executeWithProof'
+          ? 'ZK proof verified on-chain.'
+          : 'Executed via signature-only fallback.';
+
+      setMessages(prev => [...prev, {
+        id: nextId(),
+        role: 'assistant',
+        text: `Payment confirmed! ${result.amount} USDC sent to ${result.humanName} for "${result.task}". ${execNote}`,
+      }]);
+
       await refreshBalances();
     } catch (err: any) {
-      console.error('Execution failed:', err);
-      setError(err.reason || err.message || 'Transaction failed');
-      setStep('error');
+      setMessages(prev => prev.map(m =>
+        m.id === msgId ? { ...m, execStep: undefined } : m
+      ));
+      setMessages(prev => [...prev, {
+        id: nextId(),
+        role: 'system',
+        text: `Transaction failed: ${err.reason || err.message}`,
+      }]);
     }
-  }, [signer, review, refreshBalances]);
+  }, [signer, refreshBalances]);
 
-  // ── Reset ─────────────────────────────────────────────────
+  const handleDecline = useCallback((msgId: string) => {
+    setMessages(prev => prev.map(m =>
+      m.id === msgId ? { ...m, intent: undefined } : m
+    ));
+    sendMessage("I changed my mind, let's not do that.");
+  }, [sendMessage]);
 
-  const resetFlow = useCallback(() => {
-    setStep('idle');
-    setReview(null);
-    setResult(null);
-    setError(null);
-  }, []);
+  // ── Key handler ───────────────────────────────────────────
 
-  const resetAll = useCallback(() => {
-    resetFlow();
-    setAmount('');
-    setRecipient('');
-    refreshBalances();
-  }, [resetFlow, refreshBalances]);
-
-  // ── Form validation ───────────────────────────────────────
-
-  const isFormValid = amount.trim() !== '' &&
-    parseFloat(amount) > 0 &&
-    recipient.trim().length === 42 &&
-    recipient.startsWith('0x');
-
-  // ── Compute active step number for dots ───────────────────
-
-  const activeStep = step === 'idle' ? 0
-    : step === 'reviewing' ? 1
-    : step === 'signing' ? 2
-    : step === 'executing' ? 3
-    : step === 'confirmed' ? 4
-    : 0;
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  };
 
   // ── Render ────────────────────────────────────────────────
 
   return (
     <div className="app">
-
       {/* Header */}
       <header className="header">
         <div className="header-top">
           <div className="logo">VAEB</div>
-          <div className="network-badge">
-            <span className={`network-dot${connected ? ' live' : ''}`} />
-            Base Sepolia
+          <div className="header-right">
+            <div className="network-badge">
+              <span className={`network-dot${connected ? ' live' : ''}`} />
+              Base Sepolia
+            </div>
+            {connected && balances && (
+              <div className="balance-pill">
+                <span className="balance-pill-val">{balances.agent.usdc}</span>
+                <span className="balance-pill-unit">USDC</span>
+              </div>
+            )}
           </div>
         </div>
-        <p className="tagline">
-          Tell an agent what you want.<br />
-          It <em>proves</em> it won't cheat,<br />
-          then executes on-chain.
-        </p>
+        {!connected && (
+          <p className="tagline">
+            Tell an agent what you want.<br />
+            It <em>proves</em> it won't cheat,<br />
+            then executes on-chain.
+          </p>
+        )}
       </header>
 
-      {/* 01 — Connect */}
-      <section className="section">
-        <div className="section-label">01 &mdash; Connect</div>
-        <div className="wallet-bar">
-          <div className="wallet-info">
-            <div className={`wallet-dot${connected ? ' connected' : ''}`} />
-            <span className="wallet-address">
-              {connected ? truncAddr(address!) : 'Not connected'}
-            </span>
-          </div>
-          <button
-            className="btn"
-            onClick={connectWallet}
-            disabled={connected}
-          >
-            {connected ? 'Connected' : 'Connect'}
+      {/* Connect */}
+      {!connected && (
+        <section className="connect-section">
+          <button className="btn btn-primary btn-connect" onClick={connectWallet}>
+            Connect Wallet
           </button>
-        </div>
-
-        {balances && (
-          <div className="balances fade-in">
-            <div className="balance-card">
-              <div className="balance-label">YOUR WALLET</div>
-              <div className="balance-row">
-                <span className="balance-value">{parseFloat(balances.user.eth).toFixed(4)}</span>
-                <span className="balance-unit">ETH</span>
-              </div>
-              <div className="balance-row">
-                <span className="balance-value">{balances.user.usdc}</span>
-                <span className="balance-unit">USDC</span>
-              </div>
-              <div className="balance-sub">{truncAddr(address!)}</div>
-            </div>
-            <div className="balance-card">
-              <div className="balance-label">AGENT WALLET</div>
-              <div className="balance-row">
-                <span className="balance-value">{parseFloat(balances.agent.eth).toFixed(4)}</span>
-                <span className="balance-unit">ETH</span>
-              </div>
-              <div className="balance-row">
-                <span className="balance-value">{balances.agent.usdc}</span>
-                <span className="balance-unit">USDC</span>
-              </div>
-              <div className="balance-sub">{truncAddr(CONFIG.contracts.AgentWallet)}</div>
-            </div>
-          </div>
-        )}
-      </section>
-
-      {/* 02 — Intent */}
-      {connected && step === 'idle' && (
-        <section className="section fade-in">
-          <div className="section-label">02 &mdash; Intent</div>
-
-          <div className="form-group">
-            <label className="form-label">Action</label>
-            <select className="input" disabled>
-              <option>Transfer</option>
-            </select>
-          </div>
-
-          <div className="form-row">
-            <div className="form-group">
-              <label className="form-label">Token</label>
-              <select className="input" disabled>
-                <option>USDC</option>
-              </select>
-            </div>
-            <div className="form-group">
-              <label className="form-label">Amount</label>
-              <input
-                className="input input-mono"
-                type="text"
-                placeholder="0.00"
-                value={amount}
-                onChange={e => setAmount(e.target.value)}
-              />
-            </div>
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">Recipient</label>
-            <input
-              className="input input-mono"
-              type="text"
-              placeholder="0x..."
-              value={recipient}
-              onChange={e => setRecipient(e.target.value)}
-            />
-          </div>
-
-          <div className="btn-row">
-            <button
-              className="btn btn-primary"
-              onClick={handleReview}
-              disabled={!isFormValid}
-            >
-              Review Intent
-            </button>
-          </div>
+          <p className="connect-hint">Connect MetaMask to start chatting with your agent</p>
+          {connectError && (
+            <p style={{ color: '#ff6b6b', marginTop: '12px', fontSize: '13px', textAlign: 'center' }}>
+              {connectError}
+            </p>
+          )}
         </section>
       )}
 
-      {/* 03 — Execute */}
-      {step !== 'idle' && (
-        <section className="section fade-in">
-          <div className="section-label">03 &mdash; Execute</div>
+      {/* Chat */}
+      {connected && (
+        <div className="chat-container">
+          <div className="messages">
+            {messages.map(msg => (
+              <div key={msg.id} className={`message message-${msg.role} fade-in`}>
+                {msg.role === 'assistant' && (
+                  <div className="message-avatar">
+                    <div className="avatar-dot" />
+                  </div>
+                )}
+                <div className="message-content">
+                  {msg.role === 'system' ? (
+                    <div className="system-msg">{msg.text}</div>
+                  ) : (
+                    <div className="message-text">{msg.text}</div>
+                  )}
 
-          {/* Progress dots */}
-          <div className="flow-steps">
-            {[1, 2, 3, 4].map(i => (
-              <span key={`step-${i}`}>
-                <span className={`step-dot${i < activeStep ? ' done' : i === activeStep ? ' active' : ''}`} />
-                {i < 4 && <span className={`step-line${i < activeStep ? ' done' : ''}`} />}
-              </span>
+                  {/* MCP Tool Calls */}
+                  {msg.toolCalls && msg.toolCalls.length > 0 && (
+                    <div className="tool-calls-card fade-in">
+                      <div className="tool-calls-header">
+                        <div className="tool-calls-dots">
+                          {[0, 1, 2].map(i => <span key={i} className="tool-calls-dot" />)}
+                        </div>
+                        <span className="tool-calls-label">MCP TOOL CALLS</span>
+                      </div>
+                      <div className="tool-calls-body">
+                        {msg.toolCalls.map((tc, i) => (
+                          <div key={i} className="tool-call-row">
+                            <div className="tool-call-indicator">
+                              <span className="tool-call-check">&#10003;</span>
+                            </div>
+                            <div className="tool-call-info">
+                              <div className="tool-call-name">{tc.tool}</div>
+                              <div className="tool-call-args">
+                                {Object.entries(tc.args).map(([k, v]) => (
+                                  <span key={k} className="tool-call-arg">
+                                    {k}: {typeof v === 'string' ? v : JSON.stringify(v)}
+                                  </span>
+                                ))}
+                              </div>
+                              <div className="tool-call-timing">{tc.durationMs}ms</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Intent approval card */}
+                  {msg.intent && msg.execStep === undefined && (
+                    <div className="intent-card fade-in">
+                      <div className="intent-header">
+                        <div className="intent-dots">
+                          {[0, 1, 2].map(i => <span key={i} className="intent-dot" />)}
+                        </div>
+                        <span className="intent-label">PAYMENT INTENT</span>
+                      </div>
+                      <div className="intent-body">
+                        <div className="intent-row">
+                          <span className="intent-key">Hire</span>
+                          <span className="intent-val">{msg.intent.humanName}</span>
+                        </div>
+                        <div className="intent-row">
+                          <span className="intent-key">Task</span>
+                          <span className="intent-val">{msg.intent.task}</span>
+                        </div>
+                        <div className="intent-row">
+                          <span className="intent-key">Amount</span>
+                          <span className="intent-val intent-amount">{msg.intent.amount} USDC</span>
+                        </div>
+                        <div className="intent-row">
+                          <span className="intent-key">To</span>
+                          <span className="intent-val mono">{truncAddr(msg.intent.recipient)}</span>
+                        </div>
+                        <div className="intent-row">
+                          <span className="intent-key">Expires</span>
+                          <span className="intent-val mono">{new Date(msg.intent.expiry * 1000).toLocaleTimeString()}</span>
+                        </div>
+                      </div>
+                      <div className="intent-actions">
+                        <button className="btn btn-sm" onClick={() => handleDecline(msg.id)}>
+                          Decline
+                        </button>
+                        <button
+                          className="btn btn-primary btn-sm"
+                          onClick={() => handleApprove(msg.id, msg.intent!)}
+                        >
+                          Sign & Pay
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ZK Verification Log */}
+                  {msg.execStep !== undefined && (
+                    <div className="exec-log fade-in">
+                      <div className="exec-log-header">
+                        <div className="exec-log-dots">
+                          {[0, 1, 2].map(i => <span key={i} className="exec-log-dot" />)}
+                        </div>
+                        <span className="exec-log-label">EXECUTION LOG (PENDING)</span>
+                      </div>
+                      <div className="exec-log-body">
+                        {EXEC_STEPS.map((step, i) => (
+                          <div key={i} className={`exec-log-row ${
+                            i < msg.execStep! ? 'done' :
+                            i === msg.execStep! ? 'active' : 'pending'
+                          }`}>
+                            <div className="exec-log-indicator">
+                              {i < msg.execStep! ? (
+                                <span className="exec-log-check">&#10003;</span>
+                              ) : i === msg.execStep! ? (
+                                <span className="exec-log-spinner" />
+                              ) : (
+                                <span className="exec-log-circle" />
+                              )}
+                            </div>
+                            <div className="exec-log-info">
+                              <div className="exec-log-step-label">{step.label}</div>
+                              <div className="exec-log-step-desc">
+                                {i < msg.execStep! ? 'Completed' :
+                                  i === msg.execStep! ? step.desc : 'Waiting...'}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Actual execution steps (from backend) */}
+                  {msg.txResult?.steps && (
+                    <div className="exec-log fade-in">
+                      <div className="exec-log-header">
+                        <div className="exec-log-dots">
+                          {[0, 1, 2].map(i => <span key={i} className="exec-log-dot" />)}
+                        </div>
+                        <span className="exec-log-label">EXECUTION PATH (ACTUAL)</span>
+                      </div>
+                      <div className="exec-log-body">
+                        {msg.txResult.steps.map((step, i) => {
+                          const statusClass =
+                            step.status === 'success' || step.status === 'fallback'
+                              ? 'done'
+                              : 'pending';
+                          const label = step.step.replace(/_/g, ' ');
+                          const detail = step.detail || (step.status === 'fallback'
+                            ? 'Fallback path used'
+                            : step.status === 'skipped'
+                              ? 'Skipped'
+                              : 'Success');
+                          return (
+                            <div key={i} className={`exec-log-row ${statusClass}`}>
+                              <div className="exec-log-indicator">
+                                {(step.status === 'success' || step.status === 'fallback') ? (
+                                  <span className="exec-log-check">&#10003;</span>
+                                ) : (
+                                  <span className="exec-log-circle" />
+                                )}
+                              </div>
+                              <div className="exec-log-info">
+                                <div className="exec-log-step-label">{label}</div>
+                                <div className="exec-log-step-desc">{detail}</div>
+                                <div className="exec-log-detail">
+                                  <span>duration: {step.durationMs}ms</span>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Transaction result */}
+                  {msg.txResult && (
+                    <div className="tx-result fade-in">
+                      <div className="tx-result-header">
+                        <div className="tx-check">&#10003;</div>
+                        <span>Transaction confirmed</span>
+                      </div>
+                      <div className="tx-result-body">
+                        <div className="tx-row">
+                          <span className="tx-key">Hash</span>
+                          <a
+                            className="tx-val mono"
+                            href={msg.txResult.explorerUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            {truncAddr(msg.txResult.txHash, 10)}
+                          </a>
+                        </div>
+                        <div className="tx-row">
+                          <span className="tx-key">Paid</span>
+                          <span className="tx-val">{msg.txResult.amount} USDC to {msg.txResult.humanName}</span>
+                        </div>
+                        <div className="tx-balances">
+                          <span className="tx-bal">{msg.txResult.balanceBefore}</span>
+                          <span className="tx-arrow">&rarr;</span>
+                          <span className="tx-bal">{msg.txResult.balanceAfter} USDC</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
             ))}
+
+            {/* Suggestion chips */}
+            {showSuggestions && !loading && (
+              <div className="suggestions fade-in">
+                {[
+                  "I need someone to pick up groceries for me",
+                  "Can you find a dog walker nearby?",
+                  "I need help moving some furniture this weekend",
+                  "Who can run a few errands around town?",
+                ].map((text, i) => (
+                  <button
+                    key={i}
+                    className="suggestion-chip"
+                    onClick={() => handleSuggestion(text)}
+                  >
+                    {text}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Loading indicator */}
+            {loading && (
+              <div className="message message-assistant fade-in">
+                <div className="message-avatar">
+                  <div className="avatar-dot thinking" />
+                </div>
+                <div className="message-content">
+                  <div className="thinking-dots">
+                    <span /><span /><span />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div ref={messagesEndRef} />
           </div>
-          <div className="step-labels">
-            {['Review', 'Sign', 'Prove', 'Execute'].map((label, i) => (
-              <span
-                key={label}
-                className={`step-label${i + 1 < activeStep ? ' done' : i + 1 === activeStep ? ' active' : ''}`}
+
+          {/* Input */}
+          <div className="chat-input-container">
+            <div className="chat-input-bar">
+              <input
+                ref={inputRef}
+                className="chat-input"
+                type="text"
+                placeholder="Tell me what errand you need..."
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                disabled={loading}
+              />
+              <button
+                className="send-btn"
+                onClick={() => sendMessage()}
+                disabled={!input.trim() || loading}
               >
-                {label}
-              </span>
-            ))}
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <path d="M14 2L7 9M14 2L9.5 14L7 9M14 2L2 6.5L7 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+            </div>
+            <div className="chat-input-hint">
+              {connected && address && (
+                <span className="input-wallet">{truncAddr(address)}</span>
+              )}
+            </div>
           </div>
-
-          {/* Review panel */}
-          {step === 'reviewing' && review && (
-            <div style={{ marginTop: 32 }}>
-              <div className="review-panel">
-                <div className="review-row">
-                  <span className="review-key">Action</span>
-                  <span className="review-val">{review.action}</span>
-                </div>
-                <div className="review-row">
-                  <span className="review-key">Token</span>
-                  <span className="review-val">{review.token}</span>
-                </div>
-                <div className="review-row">
-                  <span className="review-key">Amount</span>
-                  <span className="review-val">{review.amount} {review.token}</span>
-                </div>
-                <div className="review-row">
-                  <span className="review-key">Recipient</span>
-                  <span className="review-val">{truncAddr(review.recipient)}</span>
-                </div>
-                <div className="review-row">
-                  <span className="review-key">From</span>
-                  <span className="review-val">{truncAddr(review.from)}</span>
-                </div>
-                <div className="review-row">
-                  <span className="review-key">Nonce</span>
-                  <span className="review-val">{review.nonce.slice(0, 14)}...</span>
-                </div>
-                <div className="review-row">
-                  <span className="review-key">Expires</span>
-                  <span className="review-val">{new Date(review.expiry * 1000).toLocaleTimeString()}</span>
-                </div>
-              </div>
-              <div className="btn-row">
-                <button className="btn" onClick={resetFlow}>Cancel</button>
-                <button className="btn btn-primary" onClick={handleSignAndExecute}>
-                  Sign & Execute
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Signing / Executing status */}
-          {(step === 'signing' || step === 'executing') && (
-            <div style={{ marginTop: 32 }}>
-              <div className="exec-status">
-                <div className="exec-step">
-                  <span className={`exec-dot${step === 'signing' ? ' active' : ' done'}`} />
-                  <span className={`exec-text${step === 'signing' ? ' active' : ' done'}`}>
-                    {step === 'signing' ? 'Requesting EIP-712 signature...' : 'Signature obtained'}
-                  </span>
-                </div>
-                <div className="exec-step">
-                  <span className={`exec-dot${step === 'executing' ? ' active' : ''}`} />
-                  <span className={`exec-text${step === 'executing' ? ' active' : ''}`}>
-                    {step === 'executing' ? 'Submitting transaction on-chain...' : 'Waiting...'}
-                  </span>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Error */}
-          {step === 'error' && error && (
-            <div style={{ marginTop: 32 }}>
-              <div className="error-msg">{error}</div>
-              <div className="btn-row">
-                <button className="btn" onClick={resetFlow}>Try again</button>
-              </div>
-            </div>
-          )}
-
-          {/* Result */}
-          {step === 'confirmed' && result && (
-            <div style={{ marginTop: 32 }}>
-              <div className="result-panel fade-in">
-                <div className="result-dots">
-                  {[0, 1, 2, 3, 4].map(i => <div key={i} className="dot" />)}
-                </div>
-                <div className="result-title">Transaction confirmed</div>
-                <div className="result-tx">{truncAddr(result.txHash, 16)}</div>
-                <div className="result-tx">
-                  <a href={result.explorerUrl} target="_blank" rel="noopener noreferrer">
-                    View on BaseScan
-                  </a>
-                </div>
-                <div className="result-balances">
-                  <div className="result-balance">
-                    <div className="result-balance-label">Before</div>
-                    <div className="result-balance-val">{result.balanceBefore} USDC</div>
-                  </div>
-                  <div className="result-arrow">&rarr;</div>
-                  <div className="result-balance">
-                    <div className="result-balance-label">After</div>
-                    <div className="result-balance-val">{result.balanceAfter} USDC</div>
-                  </div>
-                </div>
-              </div>
-              <div className="btn-row">
-                <button className="btn" onClick={resetAll}>New intent</button>
-              </div>
-            </div>
-          )}
-        </section>
+        </div>
       )}
 
       {/* Footer */}

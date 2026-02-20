@@ -7,19 +7,22 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "ts-node src/index.ts"
+    "dev": "nodemon --watch src --watch ../mcp-server/dist --ext ts,js --exec ts-node src/index.ts"
   },
   "dependencies": {
-    "express": "^4.21.0",
+    "@vaeb/mcp-server": "*",
     "cors": "^2.8.5",
     "dotenv": "^17.3.0",
-    "ethers": "^6.13.0"
+    "ethers": "^6.13.0",
+    "express": "^4.21.0",
+    "openai": "^6.22.0"
   },
   "devDependencies": {
-    "typescript": "^5.5.0",
-    "@types/node": "^20.14.0",
-    "@types/express": "^4.17.21",
     "@types/cors": "^2.8.17",
-    "ts-node": "^10.9.0"
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.0",
+    "nodemon": "^3.1.11",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.5.0"
   }
 }

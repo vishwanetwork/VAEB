@@ -11,12 +11,15 @@
 
 import { ethers } from "ethers";
 import { CHAINS } from "@vaeb/intent-sdk";
+import { ContractFactory, ProviderFactory, getContract, getProvider } from "./deps";
 
 type Config = {
   defaultChain: string;
   walletPrivateKey: string;
   agentAddress?: string;   // fallback when private key is unavailable (e.g. read-only ops)
   rpcUrl?: string;
+  providerFactory?: ProviderFactory;
+  contractFactory?: ContractFactory;
   contracts?: {
     AgentWalletFactory?: string;
   };
@@ -72,10 +75,10 @@ function buildSalt(owner: string, index: number | string = 0): string {
   );
 }
 
-function getProvider(config: Config): ethers.JsonRpcProvider {
+function getProviderForConfig(config: Config): ethers.JsonRpcProvider {
   const chainKey = config.defaultChain || "base_sepolia";
   const rpcUrl = config.rpcUrl || CHAINS[chainKey]?.rpcUrl || "https://sepolia.base.org";
-  return new ethers.JsonRpcProvider(rpcUrl);
+  return getProvider(chainKey, rpcUrl, config.providerFactory);
 }
 
 function getChainExplorer(config: Config): string {
@@ -94,9 +97,9 @@ async function createWallet(args: any, config: Config) {
   const saltIndex      = args.salt_index ?? 0;
   const salt           = buildSalt(ownerAddress, saltIndex);
 
-  const provider   = getProvider(config);
+  const provider   = getProviderForConfig(config);
   const agentWallet = new ethers.Wallet(config.walletPrivateKey, provider);
-  const factory    = new ethers.Contract(factoryAddress, FACTORY_ABI, agentWallet);
+  const factory    = getContract(factoryAddress, FACTORY_ABI, agentWallet, config.contractFactory);
   const explorer   = getChainExplorer(config);
 
   // Check if this salt is already deployed
@@ -152,8 +155,8 @@ async function predictWallet(args: any, config: Config) {
   const saltIndex      = args.salt_index ?? 0;
   const salt           = buildSalt(ownerAddress, saltIndex);
 
-  const provider = getProvider(config);
-  const factory  = new ethers.Contract(factoryAddress, FACTORY_ABI, provider);
+  const provider = getProviderForConfig(config);
+  const factory  = getContract(factoryAddress, FACTORY_ABI, provider, config.contractFactory);
 
   const predicted     = await factory.predictWalletAddress(ownerAddress, agentEOA, salt);
   const alreadyExists = await factory.isWallet(predicted);
@@ -178,8 +181,8 @@ async function getWallets(args: any, config: Config) {
   if (!ethers.isAddress(ownerAddress)) throw new Error(`Invalid owner address: ${ownerAddress}`);
 
   const factoryAddress = getFactoryAddress(config);
-  const provider       = getProvider(config);
-  const factory        = new ethers.Contract(factoryAddress, FACTORY_ABI, provider);
+  const provider       = getProviderForConfig(config);
+  const factory        = getContract(factoryAddress, FACTORY_ABI, provider, config.contractFactory);
   const explorer       = getChainExplorer(config);
 
   const wallets: string[] = await factory.getWallets(ownerAddress);

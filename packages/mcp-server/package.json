@@ -2,21 +2,29 @@
   "name": "@vaeb/mcp-server",
   "version": "0.1.0",
   "description": "VAEB MCP Server — AI agent interface for verified on-chain execution",
-  "main": "dist/index.js",
+  "main": "dist/lib.js",
+  "types": "dist/lib.d.ts",
   "bin": {
     "vaeb-mcp": "./dist/index.js"
+  },
+  "exports": {
+    ".": "./dist/lib.js",
+    "./server": "./dist/index.js"
   },
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
-    "test": "ts-node src/test-tools.ts"
+    "test": "npm run test:unit",
+    "test:unit": "node --test -r ts-node/register tests/**/*.test.ts",
+    "test:integration": "ts-node src/test-tools.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "ethers": "^6.13.0",
     "zod": "^3.23.0",
-    "@vaeb/intent-sdk": "*"
+    "@vaeb/intent-sdk": "*",
+    "circomlibjs": "^0.1.7"
   },
   "devDependencies": {
     "typescript": "^5.5.0",

@@ -336,5 +336,115 @@ export function getToolDefinitions() {
         required: ["agent_ids"],
       },
     },
+
+    // ─── Marketplace Tools (Rent a Human) ─────────────────────
+
+    {
+      name: "search_marketplace",
+      description:
+        "Search the Rent a Human marketplace for available humans who can complete a physical task. Returns matching humans with name, rating, rate in USDC, skills, and distance.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          query: {
+            type: "string",
+            description:
+              'Search query — a task type or skill like "grocery", "delivery", "pet care", "errands", "cleaning"',
+          },
+        },
+        required: ["query"],
+      },
+    },
+
+    {
+      name: "hire_human",
+      description:
+        "Hire a specific human from the marketplace for a task. Creates a USDC payment intent with EIP-712 typed data that the user must sign to approve. Only call this after the user explicitly confirms they want to hire someone.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          human_id: {
+            type: "string",
+            description: 'The ID of the human to hire (e.g. "alice", "bob")',
+          },
+          task_description: {
+            type: "string",
+            description: "Description of the task the human will perform",
+          },
+          amount: {
+            type: "string",
+            description: 'Amount in USDC to pay (e.g. "25")',
+          },
+        },
+        required: ["human_id", "task_description", "amount"],
+      },
+    },
+
+    {
+      name: "execute_payment",
+      description:
+        "Execute a signed payment intent on-chain via the full ERC-8150 ZK pipeline: check_nonce → prove_intent → AgentWallet.executeWithProof(). Falls back to executeDirectly() if the prover is unavailable. Called after the user signs the EIP-712 typed data.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          review_id: {
+            type: "string",
+            description: "The review ID from the hire_human intent",
+          },
+          signature: {
+            type: "string",
+            description: "The user's EIP-712 signature over the DirectExecution typed data",
+          },
+        },
+        required: ["review_id", "signature"],
+      },
+    },
+
+    // ─── Verify Tools (ERC-8150 ZK Pipeline) ──────────────────
+
+    {
+      name: "prove_intent",
+      description:
+        "Generate a Groth16 ZK proof for an intent bundle via the VAEB prover service. The proof attests that the intent was correctly constructed without revealing private inputs. Used before executeWithProof().",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          intent_bundle: {
+            type: "object",
+            description: "The intent bundle containing payer and actions",
+          },
+          derived_calldata: {
+            type: "object",
+            description: "The derived calldata with encoded contract calls",
+          },
+          public_inputs: {
+            type: "object",
+            description: "Public inputs: commitment, chainId, signerAddress, multicallDataHash, nonce, expiry",
+          },
+        },
+        required: ["intent_bundle", "derived_calldata", "public_inputs"],
+      },
+    },
+
+    {
+      name: "verify_proof",
+      description:
+        "Verify a Groth16 ZK proof off-chain via the VAEB prover service. Returns whether the proof is valid. Useful for pre-checking before submitting on-chain.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          proof: {
+            type: "string",
+            description: "The encoded proof bytes",
+          },
+          public_signals: {
+            type: "array",
+            items: { type: "string" },
+            description: "Array of public signal values from proof generation",
+          },
+        },
+        required: ["proof", "public_signals"],
+      },
+    },
   ];
 }

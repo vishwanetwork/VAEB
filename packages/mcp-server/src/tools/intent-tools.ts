@@ -23,6 +23,59 @@ import {
   IntentBundle,
   DerivedCalldata,
 } from "@vaeb/intent-sdk";
+import { ContractFactory, ProviderFactory, getContract, getProvider } from "./deps";
+
+// ─── EIP-712 type hashes (must match AgentWallet.sol exactly) ────────────────
+
+const ACTION_ENTRY_TYPEHASH = ethers.keccak256(
+  ethers.toUtf8Bytes("ActionEntry(string actionType,address token,address to,uint256 amount)")
+);
+
+const INTENT_BUNDLE_TYPEHASH = ethers.keccak256(
+  ethers.toUtf8Bytes(
+    "IntentBundle(string version,uint256 chainId,bytes32 nonce,uint256 expiry,address payer,ActionEntry[] actions)ActionEntry(string actionType,address token,address to,uint256 amount)"
+  )
+);
+
+/**
+ * Compute the EIP-712 struct hash for an IntentBundle.
+ * This matches what signIntentBundle() signs, and what the contract's
+ * executeWithProof() expects: recover(_hashTypedDataV4(commitment), sig) == owner
+ */
+function computeEIP712StructHash(bundle: IntentBundle): string {
+  const actionHashes = bundle.actions.map((action) =>
+    ethers.keccak256(
+      ethers.AbiCoder.defaultAbiCoder().encode(
+        ["bytes32", "bytes32", "address", "address", "uint256"],
+        [
+          ACTION_ENTRY_TYPEHASH,
+          ethers.keccak256(ethers.toUtf8Bytes(action.actionType)),
+          action.token,
+          action.to,
+          action.amount,
+        ]
+      )
+    )
+  );
+
+  // EIP-712 array of structs: keccak256(concat of element struct hashes)
+  const actionsArrayHash = ethers.keccak256(ethers.concat(actionHashes));
+
+  return ethers.keccak256(
+    ethers.AbiCoder.defaultAbiCoder().encode(
+      ["bytes32", "bytes32", "uint256", "bytes32", "uint256", "address", "bytes32"],
+      [
+        INTENT_BUNDLE_TYPEHASH,
+        ethers.keccak256(ethers.toUtf8Bytes(bundle.version)),
+        bundle.chainId,
+        bundle.nonce,
+        bundle.expiry,
+        bundle.payer,
+        actionsArrayHash,
+      ]
+    )
+  );
+}
 
 type Config = {
   defaultChain: string;
@@ -32,6 +85,12 @@ type Config = {
   requireManualApproval: boolean;
   rpcUrl?: string;
   chainId?: number;
+  ownerAddress?: string;
+  providerFactory?: ProviderFactory;
+  contractFactory?: ContractFactory;
+  fetchFn?: typeof fetch;
+  now?: () => number;
+  proofDelayMs?: number;
   contracts?: {
     AgentWallet?: string;
   };
@@ -69,6 +128,7 @@ export const intentTools = {
 // ─── create_intent ──────────────────────────────────────────────
 
 async function createIntent(args: any, config: Config) {
+  const now = config.now || Date.now;
   // Resolve chain
   const chainKey = resolveChain(
     args.chain_preference || "cheapest_gas",
@@ -83,16 +143,28 @@ async function createIntent(args: any, config: Config) {
     new ethers.Wallet(config.walletPrivateKey || ethers.Wallet.createRandom().privateKey).address;
 
   // Map input actions to SDK format
-  const actions = args.actions.map((a: any) => ({
-    type: a.type as ActionType,
-    fromToken: a.from_token,
-    toToken: a.to_token,
-    token: a.token,
-    amount: a.amount,
-    maxSlippage: a.max_slippage || 0.005,
-    preferredDex: a.preferred_dex || "auto",
-    recipient: a.recipient,
-  }));
+  const actions = args.actions.map((a: any) => {
+    // Validate recipient address for TRANSFER actions
+    if (a.type === "TRANSFER" && a.recipient) {
+      try {
+        ethers.getAddress(a.recipient);
+      } catch {
+        throw new Error(
+          `Invalid recipient address "${a.recipient}". For marketplace payments use hire_human instead of create_intent.`
+        );
+      }
+    }
+    return {
+      type: a.type as ActionType,
+      fromToken: a.from_token,
+      toToken: a.to_token,
+      token: a.token,
+      amount: a.amount,
+      maxSlippage: a.max_slippage || 0.005,
+      preferredDex: a.preferred_dex || "auto",
+      recipient: a.recipient,
+    };
+  });
 
   // Create the IntentBundle
   const bundle = createIntentBundle({
@@ -113,7 +185,7 @@ async function createIntent(args: any, config: Config) {
     bundle,
     derivedCalldata: derived,
     chainKey,
-    createdAt: Date.now(),
+    createdAt: now(),
     status: "pending",
   });
 
@@ -139,6 +211,7 @@ async function createIntent(args: any, config: Config) {
 // ─── execute_intent ─────────────────────────────────────────────
 
 async function executeIntent(args: any, config: Config) {
+  const now = config.now || Date.now;
   const intentId = args.intent_id;
   const signature = args.signature;
 
@@ -148,7 +221,7 @@ async function executeIntent(args: any, config: Config) {
   if (stored.status === "cancelled") throw new Error("Intent was cancelled");
 
   // Check expiry
-  if (Date.now() / 1000 > stored.bundle.expiry) {
+  if (now() / 1000 > stored.bundle.expiry) {
     throw new Error("Intent has expired");
   }
 
@@ -159,11 +232,16 @@ async function executeIntent(args: any, config: Config) {
     if (config.contracts?.AgentWallet) {
       const NONCE_ABI = ["function isNonceUsed(bytes32) view returns (bool)"];
       const rpcUrl = config.rpcUrl || CHAINS[stored.chainKey]?.rpcUrl;
-      const provider = new ethers.JsonRpcProvider(rpcUrl);
-      const walletContract = new ethers.Contract(
+      const provider = getProvider(
+        stored.chainKey,
+        rpcUrl,
+        config.providerFactory
+      );
+      const walletContract = getContract(
         config.contracts.AgentWallet,
         NONCE_ABI,
-        provider
+        provider,
+        config.contractFactory
       );
       const nonceUsed = await walletContract.isNonceUsed(stored.bundle.nonce);
       if (nonceUsed) throw new Error(`Nonce already used on-chain: ${stored.bundle.nonce}`);
@@ -174,17 +252,20 @@ async function executeIntent(args: any, config: Config) {
     const x402Fee = DEFAULTS.SERVICE_FEE_USDC;
 
     // Step 3: Generate ZK proof
+    // commitment = EIP-712 IntentBundle struct hash (matches what signIntentBundle signed)
+    const commitment = computeEIP712StructHash(stored.bundle);
     const proofResult: any = await generateProof(
       stored.bundle,
       stored.derivedCalldata,
-      signature,
+      commitment,
       config
     );
 
-    // Step 3: Submit to AgentWallet on-chain
+    // Step 4: Submit to AgentWallet on-chain
     const txResult = await submitToChain(
       stored.bundle,
       stored.derivedCalldata,
+      commitment,
       proofResult,
       signature,
       stored.chainKey,
@@ -260,58 +341,52 @@ async function cancelIntent(args: any, _config: Config) {
 async function generateProof(
   bundle: IntentBundle,
   derivedCalldata: DerivedCalldata,
-  _signature: string,
+  commitment: string,
   config: Config
 ) {
-  try {
-    // Try remote prover service first
-    const response = await fetch(`${config.proverEndpoint}/prove`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        intentBundle: bundle,
-        derivedCalldata,
-        publicInputs: {
-          commitment: computeIntentId(bundle),
-          chainId: bundle.chainId,
-          signerAddress: bundle.payer,
-          multicallDataHash: derivedCalldata.multicallDataHash,
-          nonce: bundle.nonce,
-          expiry: bundle.expiry,
-        },
-      }),
-    });
+  const fetchFn = config.fetchFn || fetch;
+  const signerAddress = config.ownerAddress || bundle.payer;
 
-    if (response.ok) {
-      return await response.json();
-    }
-  } catch {
-    // Prover service unavailable — use local simulated proof
+  // The circuit constraint requires derivedValues[i] == actionAmounts[i].
+  // For ERC-20 transfers the on-chain call.value is 0, so we override it
+  // here with the token amount so the prover can satisfy the constraint.
+  const proverCalls = derivedCalldata.calls.map((c, i) => ({
+    target: c.target,
+    value: i < bundle.actions.length ? bundle.actions[i].amount.toString() : "0",
+    data: c.data,
+  }));
+
+  const response = await fetchFn(`${config.proverEndpoint}/prove`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      intentBundle: {
+        payer: bundle.payer,
+        actions: bundle.actions.map((a) => ({
+          actionType: a.actionType,
+          token: a.token,
+          to: a.to,
+          amount: a.amount.toString(),
+        })),
+      },
+      derivedCalldata: { calls: proverCalls },
+      publicInputs: {
+        commitment,
+        chainId: bundle.chainId,
+        signerAddress,
+        multicallDataHash: derivedCalldata.multicallDataHash,
+        nonce: bundle.nonce,
+        expiry: bundle.expiry,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Prover service error ${response.status}: ${body}`);
   }
 
-  // Fallback: Generate simulated proof locally
-  const startTime = Date.now();
-  await new Promise((r) => setTimeout(r, 500)); // Simulate computation
-
-  const proofSeed = ethers.keccak256(
-    ethers.AbiCoder.defaultAbiCoder().encode(
-      ["bytes32", "uint256"],
-      [computeIntentId(bundle), bundle.chainId]
-    )
-  );
-
-  return {
-    proof: proofSeed, // Simplified for demo
-    publicSignals: [
-      computeIntentId(bundle),
-      bundle.chainId.toString(),
-      bundle.payer,
-      derivedCalldata.multicallDataHash,
-      bundle.nonce,
-      bundle.expiry.toString(),
-    ],
-    proofTimeMs: Date.now() - startTime,
-  };
+  return await response.json();
 }
 
 // ─── AgentWallet ABI (minimal) ──────────────────────────────────
@@ -326,6 +401,7 @@ const AGENT_WALLET_ABI = [
 async function submitToChain(
   bundle: IntentBundle,
   derivedCalldata: DerivedCalldata,
+  commitment: string,
   proofResult: any,
   signature: string,
   chainKey: string,
@@ -338,14 +414,19 @@ async function submitToChain(
   if (!agentWalletAddress) throw new Error("AgentWallet address not configured");
 
   const rpcUrl = config.rpcUrl || chain.rpcUrl;
-  const provider = new ethers.JsonRpcProvider(rpcUrl);
+  const provider = getProvider(chainKey, rpcUrl, config.providerFactory);
   const agentSigner = new ethers.Wallet(config.walletPrivateKey, provider);
-  const walletContract = new ethers.Contract(agentWalletAddress, AGENT_WALLET_ABI, agentSigner);
+  const walletContract = getContract(
+    agentWalletAddress,
+    AGENT_WALLET_ABI,
+    agentSigner,
+    config.contractFactory
+  );
 
   const publicInputs = {
-    commitment: computeIntentId(bundle),
+    commitment,
     chainId: bundle.chainId,
-    signerAddress: bundle.payer,
+    signerAddress: config.ownerAddress || bundle.payer,
     multicallDataHash: derivedCalldata.multicallDataHash,
     nonce: bundle.nonce,
     expiry: bundle.expiry,
