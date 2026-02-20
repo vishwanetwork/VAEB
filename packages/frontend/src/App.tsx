@@ -13,7 +13,7 @@ interface ChatMessage {
   intent?: ChatResponse['intent'];
   txResult?: ExecuteResponse;
   signing?: boolean;
-  execStep?: number; // 0=signing, 1=proving, 2=verifying, 3=executing, 4=done
+  execStep?: number; // 0=signing, 1=executing
 }
 
 interface WalletBalances {
@@ -37,11 +37,22 @@ declare global {
   interface Window { ethereum?: any; }
 }
 
+// Return the MetaMask provider specifically (skips Coinbase Wallet and other injectors)
+function getMetaMask(): any {
+  const eth = (window as any).ethereum;
+  if (!eth) return null;
+  // When multiple wallets are installed, each is listed in eth.providers
+  if (Array.isArray(eth.providers)) {
+    return eth.providers.find((p: any) => p.isMetaMask && !p.isCoinbaseWallet) ?? null;
+  }
+  // Single provider — accept only if it's MetaMask
+  if (eth.isMetaMask && !eth.isCoinbaseWallet) return eth;
+  return null;
+}
+
 const EXEC_STEPS = [
   { label: 'EIP-712 Signature', desc: 'Requesting signature from wallet...' },
-  { label: 'ZK Proof Generation', desc: 'Generating Groth16 proof (BN254 curve)...' },
-  { label: 'Proof Verification', desc: 'Verifying proof on-chain via Groth16Verifier...' },
-  { label: 'Transaction Execution', desc: 'Calling AgentWallet.executeDirectly()...' },
+  { label: 'Backend Execution', desc: 'Submitting to MCP backend for on-chain execution...' },
 ];
 
 // ── App ───────────────────────────────────────────────────────
@@ -51,6 +62,7 @@ export default function App() {
   const [address, setAddress] = useState<string | null>(null);
   const [signer, setSigner] = useState<ethers.JsonRpcSigner | null>(null);
   const [connected, setConnected] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
 
   // Balances
   const [balances, setBalances] = useState<WalletBalances | null>(null);
@@ -119,24 +131,26 @@ export default function App() {
   // ── Connect Wallet ────────────────────────────────────────
 
   const connectWallet = useCallback(async () => {
-    if (!window.ethereum) {
-      alert('Please install MetaMask to use this app.');
+    setConnectError(null);
+    const mm = getMetaMask();
+    if (!mm) {
+      setConnectError('MetaMask not detected. Please install MetaMask.');
       return;
     }
 
     try {
-      await window.ethereum.request({ method: 'eth_requestAccounts' });
+      await mm.request({ method: 'eth_requestAccounts' });
 
-      const chainId = await window.ethereum.request({ method: 'eth_chainId' });
+      const chainId = await mm.request({ method: 'eth_chainId' });
       if (chainId !== CONFIG.chainIdHex) {
         try {
-          await window.ethereum.request({
+          await mm.request({
             method: 'wallet_switchEthereumChain',
             params: [{ chainId: CONFIG.chainIdHex }],
           });
         } catch (switchError: any) {
           if (switchError.code === 4902) {
-            await window.ethereum.request({
+            await mm.request({
               method: 'wallet_addEthereumChain',
               params: [{
                 chainId: CONFIG.chainIdHex,
@@ -152,7 +166,7 @@ export default function App() {
         }
       }
 
-      const provider = new ethers.BrowserProvider(window.ethereum);
+      const provider = new ethers.BrowserProvider(mm);
       const s = await provider.getSigner();
       const addr = await s.getAddress();
 
@@ -160,21 +174,24 @@ export default function App() {
       setAddress(addr);
       setConnected(true);
 
-      const bals = await fetchBalances(addr);
-      setBalances(bals);
-
-      // Show welcome + suggestions
+      // Show welcome immediately — balance loads in background
       setMessages([{
         id: nextId(),
         role: 'assistant',
-        text: `Welcome back! Your agent wallet has ${bals.agent?.usdc || '...'} USDC ready to go.\n\nI'm connected to the Rent a Human marketplace — I can find and hire real people to handle physical tasks for you. Groceries, dog walking, deliveries, you name it.\n\nWhat do you need done today?`,
+        text: `Welcome! Your agent wallet is ready.\n\nI'm connected to the Rent a Human marketplace — I can find and hire real people to handle physical tasks for you. Groceries, dog walking, deliveries, you name it.\n\nWhat do you need done today?`,
       }]);
       setShowSuggestions(true);
 
-      window.ethereum.on('accountsChanged', () => location.reload());
-      window.ethereum.on('chainChanged', () => location.reload());
-    } catch (err) {
+      // Load balances non-blocking
+      fetchBalances(addr)
+        .then(bals => setBalances(bals))
+        .catch(err => console.error('Balance fetch failed:', err));
+
+      mm.on('accountsChanged', () => location.reload());
+      mm.on('chainChanged', () => location.reload());
+    } catch (err: any) {
       console.error('Connection failed:', err);
+      setConnectError(err?.message || 'Connection failed. Check console for details.');
     }
   }, []);
 
@@ -211,21 +228,9 @@ export default function App() {
       const { domain, types, message } = intent.eip712;
       const signature = await signer.signTypedData(domain, types, message);
 
-      // Step 1: ZK Proof Generation (simulated delay)
+      // Step 1: Backend Execution (real path will be returned by the server)
       setMessages(prev => prev.map(m =>
         m.id === msgId ? { ...m, execStep: 1 } : m
-      ));
-      await new Promise(r => setTimeout(r, 1500));
-
-      // Step 2: Proof Verification
-      setMessages(prev => prev.map(m =>
-        m.id === msgId ? { ...m, execStep: 2 } : m
-      ));
-      await new Promise(r => setTimeout(r, 1000));
-
-      // Step 3: Transaction Execution
-      setMessages(prev => prev.map(m =>
-        m.id === msgId ? { ...m, execStep: 3 } : m
       ));
 
       const result = await executeChatIntent(intent.reviewId, signature);
@@ -240,10 +245,15 @@ export default function App() {
         } : m
       ));
 
+      const execNote =
+        result.executionPath === 'executeWithProof'
+          ? 'ZK proof verified on-chain.'
+          : 'Executed via signature-only fallback.';
+
       setMessages(prev => [...prev, {
         id: nextId(),
         role: 'assistant',
-        text: `Payment confirmed! ${result.amount} USDC sent to ${result.humanName} for "${result.task}". ZK proof verified on-chain.`,
+        text: `Payment confirmed! ${result.amount} USDC sent to ${result.humanName} for "${result.task}". ${execNote}`,
       }]);
 
       await refreshBalances();
@@ -312,6 +322,11 @@ export default function App() {
             Connect Wallet
           </button>
           <p className="connect-hint">Connect MetaMask to start chatting with your agent</p>
+          {connectError && (
+            <p style={{ color: '#ff6b6b', marginTop: '12px', fontSize: '13px', textAlign: 'center' }}>
+              {connectError}
+            </p>
+          )}
         </section>
       )}
 
@@ -417,7 +432,7 @@ export default function App() {
                         <div className="exec-log-dots">
                           {[0, 1, 2].map(i => <span key={i} className="exec-log-dot" />)}
                         </div>
-                        <span className="exec-log-label">VERIFICATION LOG</span>
+                        <span className="exec-log-label">EXECUTION LOG (PENDING)</span>
                       </div>
                       <div className="exec-log-body">
                         {EXEC_STEPS.map((step, i) => (
@@ -437,33 +452,56 @@ export default function App() {
                             <div className="exec-log-info">
                               <div className="exec-log-step-label">{step.label}</div>
                               <div className="exec-log-step-desc">
-                                {i < msg.execStep! ? (
-                                  i === 0 ? 'Signature obtained' :
-                                  i === 1 ? 'Proof generated (10,790 constraints satisfied)' :
-                                  i === 2 ? 'Groth16Verifier.verifyProof() => true' :
-                                  'Transaction confirmed'
-                                ) : i === msg.execStep! ? (
-                                  step.desc
-                                ) : (
-                                  'Waiting...'
-                                )}
+                                {i < msg.execStep! ? 'Completed' :
+                                  i === msg.execStep! ? step.desc : 'Waiting...'}
                               </div>
-                              {i === 1 && i <= msg.execStep! && (
-                                <div className="exec-log-detail">
-                                  <span>circuit: IntentVerifier</span>
-                                  <span>curve: BN254</span>
-                                  <span>signals: 6 public inputs</span>
-                                </div>
-                              )}
-                              {i === 2 && i <= msg.execStep! && (
-                                <div className="exec-log-detail">
-                                  <span>verifier: {truncAddr(CONFIG.contracts.AgentWallet)}</span>
-                                  <span>callsHash verified</span>
-                                </div>
-                              )}
                             </div>
                           </div>
                         ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Actual execution steps (from backend) */}
+                  {msg.txResult?.steps && (
+                    <div className="exec-log fade-in">
+                      <div className="exec-log-header">
+                        <div className="exec-log-dots">
+                          {[0, 1, 2].map(i => <span key={i} className="exec-log-dot" />)}
+                        </div>
+                        <span className="exec-log-label">EXECUTION PATH (ACTUAL)</span>
+                      </div>
+                      <div className="exec-log-body">
+                        {msg.txResult.steps.map((step, i) => {
+                          const statusClass =
+                            step.status === 'success' || step.status === 'fallback'
+                              ? 'done'
+                              : 'pending';
+                          const label = step.step.replace(/_/g, ' ');
+                          const detail = step.detail || (step.status === 'fallback'
+                            ? 'Fallback path used'
+                            : step.status === 'skipped'
+                              ? 'Skipped'
+                              : 'Success');
+                          return (
+                            <div key={i} className={`exec-log-row ${statusClass}`}>
+                              <div className="exec-log-indicator">
+                                {(step.status === 'success' || step.status === 'fallback') ? (
+                                  <span className="exec-log-check">&#10003;</span>
+                                ) : (
+                                  <span className="exec-log-circle" />
+                                )}
+                              </div>
+                              <div className="exec-log-info">
+                                <div className="exec-log-step-label">{label}</div>
+                                <div className="exec-log-step-desc">{detail}</div>
+                                <div className="exec-log-detail">
+                                  <span>duration: {step.durationMs}ms</span>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   )}

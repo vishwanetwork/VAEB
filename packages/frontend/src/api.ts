@@ -59,6 +59,13 @@ export interface ExecuteResponse {
   humanName: string;
   amount: string;
   task: string;
+  executionPath?: 'executeWithProof' | 'executeDirectly';
+  steps?: Array<{
+    step: string;
+    status: 'success' | 'fallback' | 'skipped';
+    durationMs: number;
+    detail?: string;
+  }>;
   toolCalls?: ToolCallInfo[];
 }
 

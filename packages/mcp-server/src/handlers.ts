@@ -21,6 +21,9 @@ export interface MCPConfig {
   defaultChain: string;
   proverEndpoint: string;
   requireManualApproval: boolean;
+  providerFactory?: (chainKey: string, rpcOverride?: string) => any;
+  contractFactory?: (address: string, abi: any, providerOrSigner: any) => any;
+  fetchFn?: typeof fetch;
   // Express-server specific (for marketplace tools)
   contracts?: {
     AgentWallet: string;
@@ -29,6 +32,7 @@ export interface MCPConfig {
   };
   rpcUrl?: string;
   chainId?: number;
+  ownerAddress?: string;
 }
 
 // ─── Result type ─────────────────────────────────────────────

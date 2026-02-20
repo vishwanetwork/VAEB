@@ -9,6 +9,7 @@
 
 import { ethers } from "ethers";
 import type { MCPConfig } from "../handlers";
+import { getContract, getProvider } from "./deps";
 
 const WALLET_ABI = [
   "function isNonceUsed(bytes32 nonce) view returns (bool)",
@@ -39,11 +40,16 @@ async function handleCheckNonce(
     throw new Error("RPC URL or AgentWallet not configured");
   }
 
-  const provider = new ethers.JsonRpcProvider(config.rpcUrl);
-  const wallet = new ethers.Contract(
+  const provider = getProvider(
+    config.defaultChain || "base_sepolia",
+    config.rpcUrl,
+    config.providerFactory
+  );
+  const wallet = getContract(
     config.contracts.AgentWallet,
     WALLET_ABI,
-    provider
+    provider,
+    config.contractFactory
   );
 
   const used = await wallet.isNonceUsed(args.nonce);
@@ -67,9 +73,10 @@ async function handleProveIntent(
   config: MCPConfig
 ) {
   const proverEndpoint = config.proverEndpoint || "http://localhost:3001";
+  const fetchFn = config.fetchFn || fetch;
 
   try {
-    const response = await fetch(`${proverEndpoint}/prove`, {
+    const response = await fetchFn(`${proverEndpoint}/prove`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -108,9 +115,10 @@ async function handleVerifyProof(
   config: MCPConfig
 ) {
   const proverEndpoint = config.proverEndpoint || "http://localhost:3001";
+  const fetchFn = config.fetchFn || fetch;
 
   try {
-    const response = await fetch(`${proverEndpoint}/verify`, {
+    const response = await fetchFn(`${proverEndpoint}/verify`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

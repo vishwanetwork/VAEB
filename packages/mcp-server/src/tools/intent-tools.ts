@@ -23,6 +23,7 @@ import {
   IntentBundle,
   DerivedCalldata,
 } from "@vaeb/intent-sdk";
+import { ContractFactory, ProviderFactory, getContract, getProvider } from "./deps";
 
 type Config = {
   defaultChain: string;
@@ -32,6 +33,11 @@ type Config = {
   requireManualApproval: boolean;
   rpcUrl?: string;
   chainId?: number;
+  providerFactory?: ProviderFactory;
+  contractFactory?: ContractFactory;
+  fetchFn?: typeof fetch;
+  now?: () => number;
+  proofDelayMs?: number;
   contracts?: {
     AgentWallet?: string;
   };
@@ -69,6 +75,7 @@ export const intentTools = {
 // ─── create_intent ──────────────────────────────────────────────
 
 async function createIntent(args: any, config: Config) {
+  const now = config.now || Date.now;
   // Resolve chain
   const chainKey = resolveChain(
     args.chain_preference || "cheapest_gas",
@@ -83,16 +90,28 @@ async function createIntent(args: any, config: Config) {
     new ethers.Wallet(config.walletPrivateKey || ethers.Wallet.createRandom().privateKey).address;
 
   // Map input actions to SDK format
-  const actions = args.actions.map((a: any) => ({
-    type: a.type as ActionType,
-    fromToken: a.from_token,
-    toToken: a.to_token,
-    token: a.token,
-    amount: a.amount,
-    maxSlippage: a.max_slippage || 0.005,
-    preferredDex: a.preferred_dex || "auto",
-    recipient: a.recipient,
-  }));
+  const actions = args.actions.map((a: any) => {
+    // Validate recipient address for TRANSFER actions
+    if (a.type === "TRANSFER" && a.recipient) {
+      try {
+        ethers.getAddress(a.recipient);
+      } catch {
+        throw new Error(
+          `Invalid recipient address "${a.recipient}". For marketplace payments use hire_human instead of create_intent.`
+        );
+      }
+    }
+    return {
+      type: a.type as ActionType,
+      fromToken: a.from_token,
+      toToken: a.to_token,
+      token: a.token,
+      amount: a.amount,
+      maxSlippage: a.max_slippage || 0.005,
+      preferredDex: a.preferred_dex || "auto",
+      recipient: a.recipient,
+    };
+  });
 
   // Create the IntentBundle
   const bundle = createIntentBundle({
@@ -113,7 +132,7 @@ async function createIntent(args: any, config: Config) {
     bundle,
     derivedCalldata: derived,
     chainKey,
-    createdAt: Date.now(),
+    createdAt: now(),
     status: "pending",
   });
 
@@ -139,6 +158,7 @@ async function createIntent(args: any, config: Config) {
 // ─── execute_intent ─────────────────────────────────────────────
 
 async function executeIntent(args: any, config: Config) {
+  const now = config.now || Date.now;
   const intentId = args.intent_id;
   const signature = args.signature;
 
@@ -148,7 +168,7 @@ async function executeIntent(args: any, config: Config) {
   if (stored.status === "cancelled") throw new Error("Intent was cancelled");
 
   // Check expiry
-  if (Date.now() / 1000 > stored.bundle.expiry) {
+  if (now() / 1000 > stored.bundle.expiry) {
     throw new Error("Intent has expired");
   }
 
@@ -159,11 +179,16 @@ async function executeIntent(args: any, config: Config) {
     if (config.contracts?.AgentWallet) {
       const NONCE_ABI = ["function isNonceUsed(bytes32) view returns (bool)"];
       const rpcUrl = config.rpcUrl || CHAINS[stored.chainKey]?.rpcUrl;
-      const provider = new ethers.JsonRpcProvider(rpcUrl);
-      const walletContract = new ethers.Contract(
+      const provider = getProvider(
+        stored.chainKey,
+        rpcUrl,
+        config.providerFactory
+      );
+      const walletContract = getContract(
         config.contracts.AgentWallet,
         NONCE_ABI,
-        provider
+        provider,
+        config.contractFactory
       );
       const nonceUsed = await walletContract.isNonceUsed(stored.bundle.nonce);
       if (nonceUsed) throw new Error(`Nonce already used on-chain: ${stored.bundle.nonce}`);
@@ -263,9 +288,10 @@ async function generateProof(
   _signature: string,
   config: Config
 ) {
+  const fetchFn = config.fetchFn || fetch;
   try {
     // Try remote prover service first
-    const response = await fetch(`${config.proverEndpoint}/prove`, {
+    const response = await fetchFn(`${config.proverEndpoint}/prove`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -290,8 +316,12 @@ async function generateProof(
   }
 
   // Fallback: Generate simulated proof locally
-  const startTime = Date.now();
-  await new Promise((r) => setTimeout(r, 500)); // Simulate computation
+  const now = config.now || Date.now;
+  const startTime = now();
+  const delayMs = config.proofDelayMs ?? 500;
+  if (delayMs > 0) {
+    await new Promise((r) => setTimeout(r, delayMs)); // Simulate computation
+  }
 
   const proofSeed = ethers.keccak256(
     ethers.AbiCoder.defaultAbiCoder().encode(
@@ -310,7 +340,7 @@ async function generateProof(
       bundle.nonce,
       bundle.expiry.toString(),
     ],
-    proofTimeMs: Date.now() - startTime,
+    proofTimeMs: (config.now || Date.now)() - startTime,
   };
 }
 
@@ -338,9 +368,14 @@ async function submitToChain(
   if (!agentWalletAddress) throw new Error("AgentWallet address not configured");
 
   const rpcUrl = config.rpcUrl || chain.rpcUrl;
-  const provider = new ethers.JsonRpcProvider(rpcUrl);
+  const provider = getProvider(chainKey, rpcUrl, config.providerFactory);
   const agentSigner = new ethers.Wallet(config.walletPrivateKey, provider);
-  const walletContract = new ethers.Contract(agentWalletAddress, AGENT_WALLET_ABI, agentSigner);
+  const walletContract = getContract(
+    agentWalletAddress,
+    AGENT_WALLET_ABI,
+    agentSigner,
+    config.contractFactory
+  );
 
   const publicInputs = {
     commitment: computeIntentId(bundle),

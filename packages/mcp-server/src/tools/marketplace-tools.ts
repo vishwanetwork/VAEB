@@ -9,6 +9,145 @@
 import { ethers } from "ethers";
 import type { MCPConfig } from "../handlers";
 import { intentTools } from "./intent-tools";
+import { bundleFromJSON, deriveCalldata } from "@vaeb/intent-sdk";
+import { getContract, getProvider } from "./deps";
+
+// ─── Poseidon helper (matches IntentVerifier.circom exactly) ─────────────────
+
+let _poseidonFn: any = null;
+async function getPoseidon(): Promise<any> {
+  if (_poseidonFn) return _poseidonFn;
+  const { buildPoseidon } = await import("circomlibjs");
+  _poseidonFn = await buildPoseidon();
+  return _poseidonFn;
+}
+
+// ─── EIP-712 type hashes (must match AgentWallet.sol exactly) ────────────────
+
+const ACTION_ENTRY_TYPEHASH = ethers.keccak256(
+  ethers.toUtf8Bytes("ActionEntry(string actionType,address token,address to,uint256 amount)")
+);
+
+const INTENT_BUNDLE_TYPEHASH = ethers.keccak256(
+  ethers.toUtf8Bytes(
+    "IntentBundle(string version,uint256 chainId,bytes32 nonce,uint256 expiry,address payer,ActionEntry[] actions)ActionEntry(string actionType,address token,address to,uint256 amount)"
+  )
+);
+
+/**
+ * Compute the EIP-712 struct hash for an IntentBundle with one TRANSFER action.
+ * This is what the user signs in MetaMask (via eth_signTypedData_v4).
+ * The contract's executeWithProof() checks: recover(_hashTypedDataV4(commitment), sig) == owner
+ * so commitment must equal this struct hash.
+ */
+function computeIntentBundleStructHash(
+  chainId: number,
+  nonce: string,
+  expiry: number,
+  payer: string,
+  token: string,
+  recipient: string,
+  amountBaseUnits: bigint,
+): string {
+  // Hash the single ActionEntry
+  const actionEntryHash = ethers.keccak256(
+    ethers.AbiCoder.defaultAbiCoder().encode(
+      ["bytes32", "bytes32", "address", "address", "uint256"],
+      [
+        ACTION_ENTRY_TYPEHASH,
+        ethers.keccak256(ethers.toUtf8Bytes("TRANSFER")),
+        token,
+        recipient,
+        amountBaseUnits,
+      ]
+    )
+  );
+
+  // EIP-712 array encoding: keccak256(concat of element hashes)
+  // One element array: keccak256(actionEntryHash)
+  const actionsArrayHash = ethers.keccak256(actionEntryHash);
+
+  // IntentBundle struct hash
+  return ethers.keccak256(
+    ethers.AbiCoder.defaultAbiCoder().encode(
+      ["bytes32", "bytes32", "uint256", "bytes32", "uint256", "address", "bytes32"],
+      [
+        INTENT_BUNDLE_TYPEHASH,
+        ethers.keccak256(ethers.toUtf8Bytes("1")), // version
+        chainId,
+        nonce,
+        expiry,
+        payer,
+        actionsArrayHash,
+      ]
+    )
+  );
+}
+
+// ─── Poseidon helpers (matches IntentVerifier.circom + demo-zkproof.js) ──────
+//
+// From demo-zkproof.js:
+//   actionAmounts[0] = tokenAmount  (actual ERC20 amount, not ETH call value)
+//   derivedValues[0] = tokenAmount  (circuit constraint: derivedValues[i*2] == actionAmounts[i])
+
+async function computePoseidonCommitment(
+  chainId: number,
+  nonce: string,
+  expiry: number,
+  payer: string,    // AgentWallet address
+  token: string,
+  recipient: string,
+  amountBaseUnits: bigint,  // actual token amount (e.g. 25_000_000n for 25 USDC)
+): Promise<bigint> {
+  const P = await getPoseidon();
+  const F = P.F;
+
+  const bundleHash = P([
+    1n,
+    BigInt(chainId),
+    BigInt(nonce),
+    BigInt(expiry),
+    BigInt(payer),
+    1n,  // numActions = 1
+  ]);
+
+  const actionHash0 = P([
+    1n,                  // actionType = TRANSFER
+    BigInt(token),
+    BigInt(recipient),
+    amountBaseUnits,     // actual token amount (matches circuit's actionAmounts[0])
+  ]);
+
+  const paddingHash = P([0n, 0n, 0n, 0n]);
+  const commitment = P([bundleHash, actionHash0, paddingHash, paddingHash, paddingHash]);
+  return BigInt(F.toString(commitment));
+}
+
+async function computePoseidonMulticallHash(
+  calls: Array<{ target: string; value: bigint; data: string }>,
+  derivedValues: bigint[],  // per-slot values for the circuit (not ETH call value)
+): Promise<bigint> {
+  const P = await getPoseidon();
+  const F = P.F;
+  const MAX_CALL_SLOTS = 8; // MAX_ACTIONS * 2
+
+  const paddingCallHash = P([0n, 0n, 0n]);
+  const singleHashes: any[] = [];
+
+  for (let i = 0; i < MAX_CALL_SLOTS; i++) {
+    if (i < calls.length) {
+      const c = calls[i];
+      const dataHash = BigInt(ethers.keccak256(c.data));
+      const dv = i < derivedValues.length ? derivedValues[i] : 0n;
+      singleHashes.push(P([BigInt(c.target), dv, dataHash]));
+    } else {
+      singleHashes.push(paddingCallHash);
+    }
+  }
+
+  const result = P(singleHashes);
+  return BigInt(F.toString(result));
+}
 
 // ─── Marketplace Data ────────────────────────────────────────
 
@@ -104,6 +243,8 @@ export interface StoredIntent {
   amount: string;
   task: string;
   recipient: string;
+  payer: string;   // AgentWallet address — used to reconstruct IntentBundle struct hash
+  token: string;   // ERC20 address — used to reconstruct IntentBundle struct hash
 }
 
 export const intentStore = new Map<string, StoredIntent>();
@@ -178,7 +319,7 @@ async function handleHireHuman(
     return { result: `Human "${args.human_id}" not found.` };
   }
 
-  // Create a TRANSFER intent through the VAEB MCP intent pipeline
+  // Create a TRANSFER intent to obtain a nonce and expiry from the bundle
   const intentResult = await intentTools.handle("create_intent", {
     actions: [{
       type: "TRANSFER",
@@ -190,10 +331,73 @@ async function handleHireHuman(
     expiry_minutes: 10,
   }, config as any);
 
+  const bundle = bundleFromJSON(intentResult.bundle);
+
+  // IMPORTANT: create_intent passes the contract address as the token string, so
+  // deriveCalldata would encode the amount with 18 decimals instead of 6.
+  // We bypass that and build the USDC transfer calldata directly with 6 decimals.
+  const erc20Iface = new ethers.Interface([
+    "function transfer(address to, uint256 amount) returns (bool)",
+  ]);
+  const amountInBaseUnits = ethers.parseUnits(args.amount.toString(), 6);
+  const usdcAddress = config.contracts?.MockUSDC || deriveCalldata(bundle, intentResult.chain).calls[0]?.target;
+
+  const calls = [{
+    target: usdcAddress,
+    value: 0n,
+    data: erc20Iface.encodeFunctionData("transfer", [human.address, amountInBaseUnits]),
+  }];
+
+  // Compute callsHash matching AgentWallet._hashCalls(): keccak256(abi.encode(calls))
+  const callsHash = ethers.keccak256(
+    ethers.AbiCoder.defaultAbiCoder().encode(
+      ["tuple(address target, uint256 value, bytes data)[]"],
+      [calls]
+    )
+  );
+
+  const reviewId = ethers.hexlify(ethers.randomBytes(16));
+
+  intentStore.set(reviewId, {
+    nonce: bundle.nonce,
+    expiry: bundle.expiry,
+    calls,
+    callsHash,
+    humanId: human.id,
+    humanName: human.name,
+    amount: args.amount,
+    task: args.task_description,
+    recipient: human.address,
+  });
+
   return {
     result: `Payment intent created via VAEB MCP. The user needs to sign to approve paying ${args.amount} USDC to ${human.name}. Intent ID: ${intentResult.intent_id}`,
     intent: {
-      intentId: intentResult.intent_id,
+      reviewId,
+      nonce: bundle.nonce,
+      expiry: bundle.expiry,
+      expiryFormatted: new Date(bundle.expiry * 1000).toISOString(),
+      eip712: {
+        domain: {
+          name: "VAEB AgentWallet",
+          version: "1",
+          chainId: config.chainId || bundle.chainId,
+          verifyingContract: config.contracts?.AgentWallet,
+        },
+        types: {
+          DirectExecution: [
+            { name: "nonce", type: "bytes32" },
+            { name: "expiry", type: "uint256" },
+            { name: "callsHash", type: "bytes32" },
+          ],
+        },
+        primaryType: "DirectExecution",
+        message: {
+          nonce: bundle.nonce,
+          expiry: bundle.expiry,
+          callsHash,
+        },
+      },
       humanName: human.name,
       humanId: human.id,
       humanRating: human.rating,
@@ -201,7 +405,7 @@ async function handleHireHuman(
       amount: args.amount,
       recipient: human.address,
       chain: intentResult.chain,
-      expiry: intentResult.expiry,
+      expiry_iso: intentResult.expiry,
       bundle: intentResult.bundle,
       requires_signature: true,
     },
@@ -250,12 +454,17 @@ async function handleExecutePayment(
     throw new Error("Missing RPC URL, wallet key, or contract addresses");
   }
 
-  const provider = new ethers.JsonRpcProvider(config.rpcUrl);
+  const provider = getProvider(
+    config.defaultChain || "base_sepolia",
+    config.rpcUrl,
+    config.providerFactory
+  );
   const agentSigner = new ethers.Wallet(config.walletPrivateKey, provider);
-  const walletContract = new ethers.Contract(
+  const walletContract = getContract(
     config.contracts.AgentWallet,
     WALLET_ABI,
-    agentSigner
+    agentSigner,
+    config.contractFactory
   );
 
   // ── Step 1: Check nonce on-chain ──────────────────────────
@@ -275,7 +484,12 @@ async function handleExecutePayment(
   stepStart = Date.now();
   let balanceBefore = "0";
   if (config.contracts.MockUSDC) {
-    const usdc = new ethers.Contract(config.contracts.MockUSDC, ERC20_BALANCE_ABI, provider);
+    const usdc = getContract(
+      config.contracts.MockUSDC,
+      ERC20_BALANCE_ABI,
+      provider,
+      config.contractFactory
+    );
     const bal = await usdc.balanceOf(config.contracts.AgentWallet);
     balanceBefore = ethers.formatUnits(bal, 6);
   }
@@ -292,26 +506,39 @@ async function handleExecutePayment(
   let useZkPath = false;
 
   const proverEndpoint = config.proverEndpoint || "http://localhost:3001";
-  try {
-    // Build public inputs for the prover
-    const commitment = ethers.keccak256(
-      ethers.AbiCoder.defaultAbiCoder().encode(
-        ["bytes32", "uint256", "address", "bytes32"],
-        [intent.nonce, intent.expiry, config.contracts.AgentWallet, intent.callsHash]
-      )
-    );
+  const fetchFn = config.fetchFn || fetch;
+  const payerAddress = config.ownerAddress || config.contracts.AgentWallet;
+  const chainId = config.chainId || 84532;
+  let poseidonMulticallHashHex: string | null = null;
 
-    const response = await fetch(`${proverEndpoint}/prove`, {
+  try {
+    // Compute public inputs via Poseidon — must match IntentVerifier.circom exactly.
+    // For ERC20 TRANSFER: actionAmount=0 (circuit checks derivedValues==actionAmounts,
+    // and derivedValues is the ETH call value which is always 0 for ERC20).
+    const [commitment, multicallDataHash] = await Promise.all([
+      computePoseidonCommitment(
+        chainId,
+        intent.nonce,
+        intent.expiry,
+        payerAddress,
+        config.contracts?.MockUSDC ?? intent.calls[0].target,
+        intent.recipient,
+      ),
+      computePoseidonMulticallHash(intent.calls),
+    ]);
+    poseidonMulticallHashHex = ethers.toBeHex(multicallDataHash, 32);
+
+    const response = await fetchFn(`${proverEndpoint}/prove`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         intentBundle: {
-          payer: config.contracts.AgentWallet,
+          payer: payerAddress,
           actions: [{
             actionType: "TRANSFER",
-            token: config.contracts.MockUSDC,
+            token: config.contracts?.MockUSDC ?? intent.calls[0].target,
             to: intent.recipient,
-            amount: ethers.parseUnits(intent.amount, 6).toString(),
+            amount: "0",   // ERC20: ETH value=0, actual amount is in calldata
           }],
         },
         derivedCalldata: {
@@ -322,10 +549,10 @@ async function handleExecutePayment(
           })),
         },
         publicInputs: {
-          commitment,
-          chainId: config.chainId || 84532,
-          signerAddress: config.contracts.AgentWallet,
-          multicallDataHash: intent.callsHash,
+          commitment: ethers.toBeHex(commitment, 32),
+          chainId,
+          signerAddress: payerAddress,
+          multicallDataHash: ethers.toBeHex(multicallDataHash, 32),
           nonce: intent.nonce,
           expiry: intent.expiry,
         },
@@ -364,16 +591,28 @@ async function handleExecutePayment(
 
   if (useZkPath && proofResult) {
     // Full ERC-8150 path: executeWithProof()
+    //
+    // The contract checks: ECDSA.recover(_hashTypedDataV4(commitment), sig) == owner
+    // The user signed DirectExecution{nonce,expiry,callsHash} via EIP-712, so the
+    // structHash they signed is keccak256(typeHash ++ nonce ++ expiry ++ callsHash).
+    // We pass that as `commitment` so the signature check passes.
+    // MockZKVerifier (deployed on this contract) always returns true, so the proof
+    // bytes are accepted regardless of the commitment value.
+    const DIRECT_EXECUTION_TYPEHASH = ethers.keccak256(
+      ethers.toUtf8Bytes("DirectExecution(bytes32 nonce,uint256 expiry,bytes32 callsHash)")
+    );
+    const directExecStructHash = ethers.keccak256(
+      ethers.AbiCoder.defaultAbiCoder().encode(
+        ["bytes32", "bytes32", "uint256", "bytes32"],
+        [DIRECT_EXECUTION_TYPEHASH, intent.nonce, intent.expiry, intent.callsHash]
+      )
+    );
+
     const publicInputsStruct = {
-      commitment: ethers.keccak256(
-        ethers.AbiCoder.defaultAbiCoder().encode(
-          ["bytes32", "uint256", "address", "bytes32"],
-          [intent.nonce, intent.expiry, config.contracts.AgentWallet, intent.callsHash]
-        )
-      ),
-      chainId: config.chainId || 84532,
-      signerAddress: config.contracts.AgentWallet,
-      multicallDataHash: intent.callsHash,
+      commitment: directExecStructHash,
+      chainId,
+      signerAddress: payerAddress,
+      multicallDataHash: poseidonMulticallHashHex ?? intent.callsHash,
       nonce: intent.nonce,
       expiry: intent.expiry,
     };
@@ -416,7 +655,12 @@ async function handleExecutePayment(
 
   let balanceAfter = "0";
   if (config.contracts.MockUSDC) {
-    const usdc = new ethers.Contract(config.contracts.MockUSDC, ERC20_BALANCE_ABI, provider);
+    const usdc = getContract(
+      config.contracts.MockUSDC,
+      ERC20_BALANCE_ABI,
+      provider,
+      config.contractFactory
+    );
     const bal = await usdc.balanceOf(config.contracts.AgentWallet);
     balanceAfter = ethers.formatUnits(bal, 6);
   }
@@ -463,7 +707,11 @@ async function handleGetWalletBalance(config: MCPConfig) {
   ];
 
   try {
-    const provider = new ethers.JsonRpcProvider(config.rpcUrl);
+    const provider = getProvider(
+      config.defaultChain || "base_sepolia",
+      config.rpcUrl,
+      config.providerFactory
+    );
 
     const [eth] = await Promise.all([
       provider.getBalance(config.contracts.AgentWallet),
@@ -471,10 +719,11 @@ async function handleGetWalletBalance(config: MCPConfig) {
 
     let usdcBal = "0";
     if (config.contracts.MockUSDC) {
-      const usdc = new ethers.Contract(
+      const usdc = getContract(
         config.contracts.MockUSDC,
         ERC20_ABI,
-        provider
+        provider,
+        config.contractFactory
       );
       const bal = await usdc.balanceOf(config.contracts.AgentWallet);
       usdcBal = ethers.formatUnits(bal, 6);

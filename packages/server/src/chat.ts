@@ -20,16 +20,33 @@ import {
 
 const router = Router();
 
-// ─── OpenAI Client (GPT-4o-mini) ─────────────────────────────
+// ─── LLM Client (OpenAI or DeepSeek) ──────────────────────────
 
-const apiKey = process.env.OPENAI_API_KEY;
-if (!apiKey) {
+const provider =
+  (process.env.LLM_PROVIDER ||
+    (process.env.DEEPSEEK_API_KEY ? 'deepseek' : 'openai')).toLowerCase();
+
+const deepseekKey = process.env.DEEPSEEK_API_KEY || '';
+const openaiKey = process.env.OPENAI_API_KEY || '';
+const deepseekBaseUrl = process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1';
+const model =
+  process.env.LLM_MODEL ||
+  (provider === 'deepseek' ? 'deepseek-chat' : 'gpt-4o-mini');
+
+if (provider === 'deepseek' && !deepseekKey) {
+  console.error('WARNING: DEEPSEEK_API_KEY is not set in .env — chat will fail');
+}
+if (provider === 'openai' && !openaiKey) {
   console.error('WARNING: OPENAI_API_KEY is not set in .env — chat will fail');
 }
 
 const client = new OpenAI({
-  apiKey: apiKey || 'missing',
+  apiKey: provider === 'deepseek' ? deepseekKey || 'missing' : openaiKey || 'missing',
+  ...(provider === 'deepseek' ? { baseURL: deepseekBaseUrl } : {}),
 });
+
+console.log(`  LLM provider: ${provider}`);
+console.log(`  LLM model:    ${model}`);
 
 // ─── MCP Config (passed to tool handlers) ────────────────────
 
@@ -42,6 +59,7 @@ const mcpConfig: MCPConfig = {
   contracts: CONFIG.contracts,
   rpcUrl: CONFIG.rpcUrl,
   chainId: CONFIG.chainId,
+  ownerAddress: CONFIG.ownerAddress,
 };
 
 // ─── Auto-convert MCP tools → DeepSeek function format ───────
@@ -190,7 +208,7 @@ router.post('/chat', async (req: Request, res: Response) => {
 
     // Call DeepSeek with MCP-derived tools
     let response = await client.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model,
       max_tokens: 1024,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
@@ -251,7 +269,7 @@ router.post('/chat', async (req: Request, res: Response) => {
 
       // Continue conversation with tool results
       response = await client.chat.completions.create({
-        model: 'gpt-4o-mini',
+        model,
         max_tokens: 1024,
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },

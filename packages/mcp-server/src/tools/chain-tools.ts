@@ -8,22 +8,19 @@
 
 import { ethers } from "ethers";
 import { CHAINS } from "@vaeb/intent-sdk";
+import { ContractFactory, ProviderFactory, getContract, getProvider } from "./deps";
 
 type Config = {
   defaultChain: string;
   supportedChains: string[];
   rpcUrl?: string;
+  providerFactory?: ProviderFactory;
+  contractFactory?: ContractFactory;
   contracts?: {
     AgentWallet?: string;
     MockUSDC?: string;
   };
 };
-
-function getProvider(chainKey: string, rpcOverride?: string): ethers.JsonRpcProvider {
-  const chain = CHAINS[chainKey];
-  if (!chain) throw new Error(`Unsupported chain: ${chainKey}. Supported: ${Object.keys(CHAINS).join(", ")}`);
-  return new ethers.JsonRpcProvider(rpcOverride || chain.rpcUrl);
-}
 
 // ─── ERC-20 ABI fragments ───────────────────────────────────────
 
@@ -64,7 +61,7 @@ async function readBalance(args: any, config: Config) {
   const chain = CHAINS[chainKey];
   if (!chain) throw new Error(`Unsupported chain: ${chainKey}`);
 
-  const provider = getProvider(chainKey);
+  const provider = getProvider(chainKey, undefined, config.providerFactory);
   const walletAddress = args.wallet;
 
   // Native ETH balance
@@ -80,7 +77,7 @@ async function readBalance(args: any, config: Config) {
 
   // ERC-20 balance
   const tokenAddress = chain.tokens[args.token.toUpperCase()] || args.token;
-  const contract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
+  const contract = getContract(tokenAddress, ERC20_ABI, provider, config.contractFactory);
 
   try {
     const [balance, decimals, symbol] = await Promise.all([
@@ -117,13 +114,13 @@ async function getWalletBalance(config: Config) {
   const walletAddress = config.contracts?.AgentWallet;
   if (!walletAddress) throw new Error("AgentWallet address not configured");
 
-  const provider = getProvider(chainKey, config.rpcUrl);
+  const provider = getProvider(chainKey, config.rpcUrl, config.providerFactory);
   const ethBalance = await provider.getBalance(walletAddress);
 
   let usdcBalance = "N/A";
   const usdcAddress = config.contracts?.MockUSDC || chain.tokens.USDC;
   try {
-    const erc20 = new ethers.Contract(usdcAddress, ERC20_ABI, provider);
+    const erc20 = getContract(usdcAddress, ERC20_ABI, provider, config.contractFactory);
     const [bal, dec] = await Promise.all([erc20.balanceOf(walletAddress), erc20.decimals()]);
     usdcBalance = ethers.formatUnits(bal, dec);
   } catch {
@@ -152,8 +149,8 @@ async function checkNonce(args: any, config: Config) {
   const walletAddress = config.contracts?.AgentWallet;
   if (!walletAddress) throw new Error("AgentWallet address not configured");
 
-  const provider = getProvider(chainKey, config.rpcUrl);
-  const wallet = new ethers.Contract(walletAddress, WALLET_ABI, provider);
+  const provider = getProvider(chainKey, config.rpcUrl, config.providerFactory);
+  const wallet = getContract(walletAddress, WALLET_ABI, provider, config.contractFactory);
   const isUsed = await wallet.isNonceUsed(args.nonce);
 
   return {
@@ -245,7 +242,7 @@ async function estimateGas(args: any, config: Config) {
   const gasLimit = gasEstimates[args.operation] || 200000;
 
   try {
-    const provider = getProvider(chainKey);
+    const provider = getProvider(chainKey, undefined, config.providerFactory);
     const feeData = await provider.getFeeData();
     const gasPrice = feeData.gasPrice || ethers.parseUnits("1", "gwei");
     const gasCostWei = gasPrice * BigInt(gasLimit);
@@ -278,7 +275,7 @@ async function getReceipt(args: any, config: Config) {
   const chain = CHAINS[chainKey];
   if (!chain) throw new Error(`Unsupported chain: ${chainKey}`);
 
-  const provider = getProvider(chainKey);
+  const provider = getProvider(chainKey, undefined, config.providerFactory);
 
   try {
     const receipt = await provider.getTransactionReceipt(args.tx_hash);

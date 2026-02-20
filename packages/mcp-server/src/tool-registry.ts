@@ -381,17 +381,6 @@ export function getToolDefinitions() {
     },
 
     {
-      name: "get_wallet_balance",
-      description:
-        "Check the USDC and ETH balance of the AgentWallet (the wallet that will pay the human).",
-      inputSchema: {
-        type: "object" as const,
-        properties: {},
-        required: [],
-      },
-    },
-
-    {
       name: "execute_payment",
       description:
         "Execute a signed payment intent on-chain via the full ERC-8150 ZK pipeline: check_nonce → prove_intent → AgentWallet.executeWithProof(). Falls back to executeDirectly() if the prover is unavailable. Called after the user signs the EIP-712 typed data.",
@@ -412,22 +401,6 @@ export function getToolDefinitions() {
     },
 
     // ─── Verify Tools (ERC-8150 ZK Pipeline) ──────────────────
-
-    {
-      name: "check_nonce",
-      description:
-        "Check if a nonce has been used on-chain via AgentWallet.isNonceUsed(). Used to verify an intent hasn't been replayed before execution.",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          nonce: {
-            type: "string",
-            description: "The bytes32 nonce to check (hex-encoded)",
-          },
-        },
-        required: ["nonce"],
-      },
-    },
 
     {
       name: "prove_intent",

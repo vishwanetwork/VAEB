@@ -13,6 +13,7 @@ import { intentTools } from "./tools/intent-tools";
 import { walletTools } from "./tools/wallet-tools";
 import { trustTools } from "./tools/trust-tools";
 import { marketplaceTools } from "./tools/marketplace-tools";
+import { verifyTools } from "./tools/verify-tools";
 import { getToolDefinitions } from "./tool-registry";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -96,6 +97,10 @@ async function routeTool(name: string, args: Record<string, unknown>) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const out = await marketplaceTools.handle(name, args as any, config as any);
     return out.result;
+  }
+  if (["prove_intent", "verify_proof"].includes(name)) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return await verifyTools.handle(name, args as any, config as any);
   }
   throw new Error(`Unknown tool: ${name}`);
 }
