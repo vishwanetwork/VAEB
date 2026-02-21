@@ -16,7 +16,7 @@
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "test": "npm run test:unit",
-    "test:unit": "node --test -r ts-node/register tests/**/*.test.ts",
+    "test:unit": "TS_NODE_PROJECT=tsconfig.test.json node --test -r ts-node/register tests/**/*.test.ts",
     "test:integration": "ts-node src/test-tools.ts"
   },
   "dependencies": {

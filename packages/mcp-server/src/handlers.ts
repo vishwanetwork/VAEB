@@ -33,6 +33,7 @@ export interface MCPConfig {
   rpcUrl?: string;
   chainId?: number;
   ownerAddress?: string;
+  explorer?: string;
 }
 
 // ─── Result type ─────────────────────────────────────────────
@@ -69,7 +70,9 @@ export async function handleToolCall(
   if (CHAIN_TOOLS.includes(name)) {
     result = await chainTools.handle(name, args, config);
   } else if (INTENT_TOOLS.includes(name)) {
-    result = await intentTools.handle(name, args, config);
+    const out = await intentTools.handle(name, args, config);
+    result = out.result;
+    intent = out.intent;
   } else if (TRUST_TOOLS.includes(name)) {
     result = await trustTools.handle(name, args, config);
   } else if (MARKETPLACE_TOOLS.includes(name)) {

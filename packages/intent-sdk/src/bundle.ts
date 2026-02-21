@@ -19,6 +19,7 @@ import {
   CHAINS,
   EIP712_DOMAIN_TYPE,
   EIP712_TYPES,
+  EIP712_ZK_INTENT_TYPES,
   DEFAULTS,
   UNISWAP_V3_SELECTORS,
   ERC20_SELECTORS,
@@ -227,6 +228,37 @@ export async function signIntentBundle(
   throw new Error("Signer does not support signTypedData");
 }
 
+// ─── ZKIntent EIP-712 Signing (ERC-8150) ─────────────────────────
+
+/**
+ * Construct the EIP-712 typed data for signing a ZKIntent.
+ * The user signs ZKIntent{nonce, expiry, commitment} where commitment
+ * is the Poseidon hash of the IntentBundle (matches the ZK circuit).
+ */
+export function getZKIntentTypedData(
+  nonce: string,
+  expiry: number,
+  commitment: string,
+  verifyingContract: string,
+  chainId: number,
+) {
+  return {
+    domain: {
+      name: EIP712_DOMAIN_TYPE.name,
+      version: EIP712_DOMAIN_TYPE.version,
+      chainId,
+      verifyingContract: ethers.getAddress(verifyingContract),
+    },
+    types: EIP712_ZK_INTENT_TYPES,
+    primaryType: "ZKIntent" as const,
+    message: {
+      nonce,
+      expiry,
+      commitment,
+    },
+  };
+}
+
 // ─── Intent ID Computation ──────────────────────────────────────
 
 /**
@@ -334,7 +366,8 @@ export function bundleFromJSON(json: any): IntentBundle {
  */
 export async function deriveCalldata(
   bundle: IntentBundle,
-  chainKey: string
+  chainKey: string,
+  userAddress?: string,
 ): Promise<DerivedCalldata> {
   const chainConfig = CHAINS[chainKey];
   if (!chainConfig) throw new Error(`Unknown chain: ${chainKey}`);
@@ -344,7 +377,7 @@ export async function deriveCalldata(
   for (const action of bundle.actions) {
     switch (action.actionType) {
       case ActionType.TRANSFER:
-        calls.push(deriveTransferCall(action));
+        calls.push(deriveTransferCall(action, userAddress || bundle.payer));
         break;
 
       case ActionType.SWAP:
@@ -376,15 +409,15 @@ export async function deriveCalldata(
   };
 }
 
-function deriveTransferCall(action: ActionEntry): DerivedCall {
+function deriveTransferCall(action: ActionEntry, payer: string): DerivedCall {
   const iface = new ethers.Interface([
-    "function transfer(address to, uint256 amount) returns (bool)",
+    "function transferFrom(address from, address to, uint256 amount) returns (bool)",
   ]);
 
   return {
     target: action.token,
     value: 0n,
-    data: iface.encodeFunctionData("transfer", [action.to, action.amount]),
+    data: iface.encodeFunctionData("transferFrom", [payer, action.to, action.amount]),
   };
 }
 

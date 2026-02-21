@@ -75,12 +75,30 @@ async function handleProveIntent(
   const proverEndpoint = config.proverEndpoint || "http://localhost:3001";
   const fetchFn = config.fetchFn || fetch;
 
+  // Resolve token symbols (e.g. "USDC") to contract addresses.
+  // The prover needs hex addresses so it can convert them to BigInt for the circuit.
+  const tokenSymbolMap: Record<string, string | undefined> = {
+    USDC: config.contracts?.MockUSDC,
+    ETH:  "0x0000000000000000000000000000000000000000",
+  };
+  function resolveToken(token: string): string {
+    if (token?.startsWith("0x")) return token;
+    return tokenSymbolMap[token?.toUpperCase()] ?? token;
+  }
+  const resolvedBundle = {
+    ...args.intent_bundle,
+    actions: (args.intent_bundle?.actions ?? []).map((a: any) => ({
+      ...a,
+      token: resolveToken(a.token ?? ""),
+    })),
+  };
+
   try {
     const response = await fetchFn(`${proverEndpoint}/prove`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        intentBundle: args.intent_bundle,
+        intentBundle: resolvedBundle,
         derivedCalldata: args.derived_calldata,
         publicInputs: args.public_inputs,
       }),

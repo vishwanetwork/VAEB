@@ -191,11 +191,11 @@ async function run() {
       chain_preference: "cheapest_gas",
       expiry_minutes: 10,
     }, config);
-    if (!r.intent_id) throw new Error("Missing intent_id");
-    if (!r.bundle) throw new Error("Missing bundle");
-    if (!r.expiry) throw new Error("Missing expiry");
-    intentId = r.intent_id;
-    return { intent_id: r.intent_id, chain: r.chain, fee: r.service_fee, expiry: r.expiry };
+    if (!r.result.intent_id) throw new Error("Missing intent_id");
+    if (!r.result.bundle) throw new Error("Missing bundle");
+    if (!r.result.expiry) throw new Error("Missing expiry");
+    intentId = r.result.intent_id;
+    return { intent_id: r.result.intent_id, chain: r.result.chain, fee: r.result.service_fee, expiry: r.result.expiry };
   });
 
   await test("create_intent — SWAP 0.1 ETH → USDC", async () => {
@@ -210,8 +210,8 @@ async function run() {
       }],
       expiry_minutes: 5,
     }, config);
-    if (!r.intent_id) throw new Error("Missing intent_id");
-    return { intent_id: r.intent_id, human_readable: r.human_readable };
+    if (!r.result.intent_id) throw new Error("Missing intent_id");
+    return { intent_id: r.result.intent_id, human_readable: r.result.human_readable };
   });
 
   await test("create_intent — STAKE 50 USDC (most_liquidity chain)", async () => {
@@ -219,16 +219,16 @@ async function run() {
       actions: [{ type: "STAKE", token: "USDC", amount: 50 }],
       chain_preference: "most_liquidity",
     }, config);
-    if (!r.intent_id) throw new Error("Missing intent_id");
-    return { intent_id: r.intent_id, chain: r.chain };
+    if (!r.result.intent_id) throw new Error("Missing intent_id");
+    return { intent_id: r.result.intent_id, chain: r.result.chain };
   });
 
   await test("simulate_intent — dry-run the TRANSFER intent", async () => {
     if (!intentId) throw new Error("No intent_id available (create_intent failed)");
     const r = await intentTools.handle("simulate_intent", { intent_id: intentId }, config);
-    if (r.simulation !== "success") throw new Error(`Simulation failed: ${r.simulation}`);
-    if (!Array.isArray(r.calls)) throw new Error("Missing calls array");
-    return { simulation: r.simulation, call_count: r.calls.length, total_gas: r.total_gas_estimate };
+    if (r.result.simulation !== "success") throw new Error(`Simulation failed: ${r.result.simulation}`);
+    if (!Array.isArray(r.result.calls)) throw new Error("Missing calls array");
+    return { simulation: r.result.simulation, call_count: r.result.calls.length, total_gas: r.result.total_gas_estimate };
   });
 
   let cancelId = "";
@@ -236,15 +236,15 @@ async function run() {
     const r = await intentTools.handle("create_intent", {
       actions: [{ type: "TRANSFER", token: "ETH", amount: 0.01, recipient: "0x77A93ecD2437DA60aAFDBF595e74e0317b0d0B47" }],
     }, config);
-    cancelId = r.intent_id;
+    cancelId = r.result.intent_id;
     return { intent_id: cancelId };
   });
 
   await test("cancel_intent — cancels a pending intent", async () => {
     if (!cancelId) throw new Error("No intent_id available for cancellation");
     const r = await intentTools.handle("cancel_intent", { intent_id: cancelId }, config);
-    if (r.status !== "cancelled") throw new Error(`Expected cancelled, got ${r.status}`);
-    return { status: r.status, nonce: r.nonce };
+    if (r.result.status !== "cancelled") throw new Error(`Expected cancelled, got ${r.result.status}`);
+    return { status: r.result.status, nonce: r.result.nonce };
   });
 
   await test("cancel_intent — double-cancel should error", async () => {

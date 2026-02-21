@@ -10,7 +10,7 @@
 
 import { Router, Request, Response } from 'express';
 import OpenAI from 'openai';
-import { CONFIG } from './config'; // must import first — loads dotenv
+import { CONFIG, getChainConfig } from './config'; // must import first — loads dotenv
 import {
   getToolDefinitions,
   handleToolCall,
@@ -49,18 +49,29 @@ console.log(`  LLM provider: ${provider}`);
 console.log(`  LLM model:    ${model}`);
 
 // ─── MCP Config (passed to tool handlers) ────────────────────
+// Base config — chain-specific fields are set per-request via buildMcpConfig()
 
-const mcpConfig: MCPConfig = {
+const baseMcpConfig: Omit<MCPConfig, 'contracts' | 'rpcUrl' | 'chainId' | 'explorer'> = {
   walletPrivateKey: CONFIG.agentPrivateKey,
-  supportedChains: ['base_sepolia'],
+  supportedChains: ['base_sepolia', 'kite_testnet'],
   defaultChain: 'base_sepolia',
   proverEndpoint: process.env.PROVER_ENDPOINT || 'http://localhost:3001',
   requireManualApproval: false,
-  contracts: CONFIG.contracts,
-  rpcUrl: CONFIG.rpcUrl,
-  chainId: CONFIG.chainId,
   ownerAddress: CONFIG.ownerAddress,
 };
+
+function buildMcpConfig(chainKey?: string, walletAddress?: string): MCPConfig {
+  const chain = getChainConfig(chainKey);
+  return {
+    ...baseMcpConfig,
+    defaultChain: chain.key,
+    contracts: chain.contracts,
+    rpcUrl: chain.rpcUrl,
+    chainId: chain.chainId,
+    explorer: chain.explorer,
+    ownerAddress: walletAddress || baseMcpConfig.ownerAddress,
+  };
+}
 
 // ─── Auto-convert MCP tools → DeepSeek function format ───────
 // MCP inputSchema is JSON Schema — same as OpenAI parameters.
@@ -97,7 +108,7 @@ const conversationStore = new Map<string, Array<OpenAI.ChatCompletionMessagePara
 
 const SYSTEM_PROMPT = `You are VAEB Agent — an AI assistant powered by MCP (Model Context Protocol) tools for verified on-chain execution on Base Sepolia. You implement ERC-8150 (Zero-Knowledge Agent Payment Verification) and x402 (HTTP 402 agent-to-agent micropayments on Base).
 
-The wallet is fully funded with USDC and ready. Never tell the user to deposit or top up.
+The user holds their own USDC (non-custodial). When paying, the user first approves the AgentWallet to spend their tokens, then signs a ZKIntent commitment. The AgentWallet uses transferFrom to move funds on their behalf after ZK proof verification.
 
 DECISION GUIDE — pick the right tool for the user's request:
 
@@ -156,12 +167,11 @@ INTENT FLOW (ERC-8150 ZK-verified DeFi — swap, transfer, stake):
 4. On confirmation → follow the EXECUTION PIPELINE below.
 
 EXECUTION PIPELINE (required for ALL on-chain transactions):
-1. get_wallet_balance — verify the wallet has sufficient funds for the intent. Abort if insufficient.
+1. get_wallet_balance — verify the user's EOA has sufficient USDC. Abort if insufficient.
 2. check_nonce — verify the intent nonce hasn't been used on-chain. Abort if already used.
 3. prove_intent — generate a Groth16 ZK proof (Poseidon commitment over the bundle via snarkjs prover service).
-4. verify_proof — verify the ZK proof off-chain before asking the user to sign.
-5. User signs the commitment via EIP-712 with their wallet.
-6. execute_payment — submits executeWithProof() on-chain: re-checks nonce, verifies the ZK proof through the Groth16Verifier → Adapter chain, recovers the signer from the EIP-712 signature, and atomically executes the calls.
+4. User approves USDC spending (ERC-20 approve) for the AgentWallet, then signs ZKIntent(nonce, expiry, commitment) via EIP-712.
+5. execute_payment — submits executeWithProof() on-chain: re-checks nonce, verifies the ZK proof, recovers the signer from the EIP-712 signature, and atomically executes transferFrom calls.
 
 TRUST FLOW (evaluating agents):
 1. User asks about agents → call discover_agents to find available agents.
@@ -189,12 +199,15 @@ interface CollectedToolCall {
 
 router.post('/chat', async (req: Request, res: Response) => {
   try {
-    const { message, walletAddress, sessionId } = req.body;
+    const { message, walletAddress, sessionId, chain } = req.body;
 
     if (!message || !walletAddress) {
       res.status(400).json({ error: 'Missing message or walletAddress' });
       return;
     }
+
+    // Build per-request MCP config with chain-specific values
+    const mcpConfig = buildMcpConfig(chain, walletAddress);
 
     // Get or create conversation history
     const sid = sessionId || 'default';
@@ -230,36 +243,45 @@ router.post('/chat', async (req: Request, res: Response) => {
 
       // Process each tool call through MCP handlers
       for (const toolCall of toolCalls) {
-        if (toolCall.type !== 'function') continue;
+        if (toolCall.type !== 'function') {
+          // Must respond to every tool_call_id or the API returns 400
+          history.push({ role: 'tool', tool_call_id: toolCall.id, content: 'unsupported tool type' });
+          continue;
+        }
 
         const args = JSON.parse(toolCall.function.arguments);
 
-        // Route through MCP
-        const mcpResult = await handleToolCall(
-          toolCall.function.name,
-          args,
-          mcpConfig
-        );
+        let resultText: string;
+        try {
+          // Route through MCP
+          const mcpResult = await handleToolCall(
+            toolCall.function.name,
+            args,
+            mcpConfig
+          );
 
-        // Collect metadata for frontend display
-        collectedToolCalls.push({
-          tool: mcpResult.toolMeta.tool,
-          args: mcpResult.toolMeta.args,
-          result: mcpResult.result,
-          durationMs: mcpResult.toolMeta.durationMs,
-        });
+          // Collect metadata for frontend display
+          collectedToolCalls.push({
+            tool: mcpResult.toolMeta.tool,
+            args: mcpResult.toolMeta.args,
+            result: mcpResult.result,
+            durationMs: mcpResult.toolMeta.durationMs,
+          });
 
-        // Capture intent if produced (hire_human)
-        if (mcpResult.intent) {
-          intent = mcpResult.intent;
+          // Capture intent if produced (hire_human)
+          if (mcpResult.intent) {
+            intent = mcpResult.intent;
+          }
+
+          resultText =
+            typeof mcpResult.result === 'string'
+              ? mcpResult.result
+              : JSON.stringify(mcpResult.result);
+        } catch (toolErr: any) {
+          resultText = `Error: ${toolErr.message}`;
         }
 
-        // Feed result back to DeepSeek
-        const resultText =
-          typeof mcpResult.result === 'string'
-            ? mcpResult.result
-            : JSON.stringify(mcpResult.result);
-
+        // Always push a tool response — even on error — to keep history valid
         history.push({
           role: 'tool',
           tool_call_id: toolCall.id,
@@ -314,12 +336,15 @@ router.post('/chat', async (req: Request, res: Response) => {
 
 router.post('/chat/execute', async (req: Request, res: Response) => {
   try {
-    const { reviewId, signature } = req.body;
+    const { reviewId, signature, chain } = req.body;
 
     if (!reviewId || !signature) {
       res.status(400).json({ error: 'Missing reviewId or signature' });
       return;
     }
+
+    // Build per-request MCP config with chain-specific values
+    const mcpConfig = buildMcpConfig(chain);
 
     // Route through MCP tool handler
     const mcpResult = await handleToolCall(

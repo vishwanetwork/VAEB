@@ -4,6 +4,8 @@ AI agents executing on-chain transactions shouldn't require blind trust. VAEB is
 
 The agent can't cheat — the ZK proof cryptographically binds the signed intent to the executed calldata. No trust required.
 
+**Non-custodial (ERC-8150)** — The user holds their own funds. The AgentWallet never touches user tokens directly — it calls `transferFrom(user, recipient, amount)` after the user approves spending and signs a ZKIntent commitment. The agent submits the transaction on behalf of the owner.
+
 Built for ETH Denver 2026 on Base Sepolia. Authors of [ERC-8150](doc/eip8150.md) (Zero-Knowledge Agent Payment Verification).
 
 **x402 compatible** — VAEB MCP tools are designed to be gated by [x402](https://github.com/coinbase/x402) (HTTP 402 Payment Required). AI agents pay per tool call in USDC, directly from their wallet. The included **RentaHuman** marketplace demo shows this end-to-end: an AI agent discovers available humans, pays via x402 to hire them, and the payment is ZK-verified on-chain before execution.
@@ -15,9 +17,9 @@ Built for ETH Denver 2026 on Base Sepolia. Authors of [ERC-8150](doc/eip8150.md)
 ```
 User signs intent          Agent derives calldata        Chain verifies + executes
 ─────────────────          ──────────────────────        ────────────────────────
-"Send 100 USDC        →    transferFrom(payer,      →    Groth16Verifier confirms
+"Send 100 USDC        →    transferFrom(user,       →    Groth16Verifier confirms
  to 0x...dead"             0xdead, 100e6)                proof → ECDSA checks sig
- [EIP-712 sig]             + Groth16 proof               → nonce/expiry → multicall
+ [EIP-712 ZKIntent]        + Groth16 proof               → nonce/expiry → multicall
 ```
 
 The ZK circuit (Groth16, 10,790 constraints) proves:
@@ -26,6 +28,139 @@ The ZK circuit (Groth16, 10,790 constraints) proves:
 - chainId, payer address, nonce, and expiry all match
 
 Only the commitment appears on-chain — the full intent stays private.
+
+### Non-custodial execution (ERC-8150)
+
+```
+1. User holds USDC in their own wallet (EOA)
+2. User approves AgentWallet to spend USDC (ERC-20 approve)
+3. User signs ZKIntent(nonce, expiry, commitment) via EIP-712
+4. Agent generates Groth16 ZK proof
+5. Agent calls AgentWallet.executeWithProof()
+6. Contract verifies proof + signature → calls transferFrom(user, recipient, amount)
+```
+
+The agent spends money on behalf of the owner — but only what was approved, and only for the exact intent the user signed.
+
+---
+
+## Quick start
+
+### 1. Install
+
+```bash
+git clone https://github.com/vishwanetwork/VAEB
+cd VAEB
+npm install
+```
+
+### 2. Configure
+
+```bash
+cp .env.example .env
+```
+
+Fill in `.env`:
+
+```env
+OWNER_PRIVATE_KEY=0x<owner-key>       # User who signs intents and holds funds
+AGENT_PRIVATE_KEY=0x<agent-key>       # Agent EOA that submits transactions
+OWNER_ADDRESS=0x<owner-address>
+BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
+CHAIN_ID=84532
+
+# AI chat backend (pick one)
+OPENAI_API_KEY=sk-...
+# or
+DEEPSEEK_API_KEY=sk-...
+```
+
+Generate wallets if needed:
+
+```bash
+node -e "const {ethers}=require('ethers'); const w=ethers.Wallet.createRandom(); console.log(w.address, w.privateKey)"
+```
+
+Fund both with Base Sepolia ETH (owner needs ~0.01, agent needs ~0.001):
+- https://faucet.quicknode.com/base/sepolia
+- https://www.alchemy.com/faucets/base-sepolia
+
+### 3. Build
+
+```bash
+npm run build
+```
+
+### 4. Deploy contracts
+
+```bash
+node scripts/deploy.js
+```
+
+This deploys MockZKVerifier, MockUSDC, and AgentWallet. It also:
+- Mints 1000 USDC to the owner (non-custodial)
+- Approves AgentWallet to spend owner's USDC
+- Updates `.env`, frontend config, and server config with new addresses
+
+Deploy to other chains via `DEFAULT_CHAIN`:
+
+```bash
+DEFAULT_CHAIN=base node scripts/deploy.js         # Base mainnet
+DEFAULT_CHAIN=kite_testnet node scripts/deploy.js  # Kite AI Testnet
+```
+
+### 5. Run the ZK demo (standalone)
+
+```bash
+node scripts/demo-zkproof.js
+```
+
+This deploys fresh contracts with a real Groth16 verifier (not mock) and runs the full pipeline end-to-end:
+
+```
+✅ Minted 1000 USDC to owner (non-custodial)
+✅ Owner approved AgentWallet to spend up to 1000 USDC
+✅ Proof generated in 0.4s
+✅ Owner signed ZKIntent(nonce, expiry, commitment)
+✅ CONFIRMED — executeWithProof() succeeded
+   Owner USDC: 900.0 (was 1000.0)
+   Recipient:  100.0 (was 0.0)
+✅ ALL CHECKS PASSED — real ZK proof verified on-chain (non-custodial)!
+```
+
+### 6. Run the full stack (chat UI + agent)
+
+**Terminal 1 — Prover service** (port 3001, generates Groth16 proofs):
+```bash
+cd packages/prover-service && npm start
+```
+
+**Terminal 2 — Express backend** (port 3002, AI agent + MCP tool bridge):
+```bash
+cd packages/server && npm run dev
+```
+
+**Terminal 3 — Frontend** (port 5173, React chat UI):
+```bash
+cd packages/frontend && npm run dev
+```
+
+Or run all at once:
+
+```bash
+npm run dev
+```
+
+Open [http://localhost:5173](http://localhost:5173), connect MetaMask (use the owner wallet from `.env`), and chat:
+
+- *"I need someone to walk my dog"* — marketplace flow
+- *"What's my balance?"* — check USDC balance
+- *"Send 10 USDC to 0x..."* — direct transfer intent
+
+The agent will:
+1. Ask you to approve USDC spending (ERC-20 approve)
+2. Request your EIP-712 signature on the ZKIntent
+3. Generate a ZK proof and execute on-chain
 
 ---
 
@@ -49,128 +184,13 @@ vaeb/
 │   ├── prover-service/             # ZK prover service wrapping snarkjs
 │   └── server/                     # Express backend — AI chat + tool execution bridge
 ├── scripts/
-│   ├── deploy.js                   # Deploy contracts → deployments.json
+│   ├── deploy.js                   # Deploy contracts (chain-configurable via DEFAULT_CHAIN)
 │   ├── deploy-mcp.js               # Build and configure the MCP server
 │   ├── demo-zkproof.js             # End-to-end ZK demo (real Groth16 on-chain)
 │   └── demo-live.js                # Simple demo (executeDirectly, no ZK)
 └── contracts/deployments/
-    └── deployments.json            # Deployed contract addresses (source of truth)
+    └── base_sepolia.json           # Deployed contract addresses
 ```
-
----
-
-## Deployed contracts — Base Sepolia
-
-All deployed addresses live in [`contracts/deployments/deployments.json`](contracts/deployments/deployments.json). Scripts and packages read from this file automatically — no manual address copy-paste needed.
-
-| Contract | Address |
-|---|---|
-| AgentWallet | [`0x99D238c22499e679e9d45578245083FE690C8B5f`](https://sepolia.basescan.org/address/0x99D238c22499e679e9d45578245083FE690C8B5f) |
-| AgentWalletFactory | [`0x9A92E10B3F62910254923CBfF59C3b1B4FFAcB41`](https://sepolia.basescan.org/address/0x9A92E10B3F62910254923CBfF59C3b1B4FFAcB41) |
-| Groth16Verifier | [`0xB533793f4813822CFb326b75b8D459d8A9faCF4F`](https://sepolia.basescan.org/address/0xB533793f4813822CFb326b75b8D459d8A9faCF4F) |
-| Groth16VerifierAdapter | [`0x4FD7cb52eE367B9eC7Ec84d862B28C2230CCdaEE`](https://sepolia.basescan.org/address/0x4FD7cb52eE367B9eC7Ec84d862B28C2230CCdaEE) |
-| MockUSDC | [`0x93560481FE085E4Fd1A0f0bAb2E625118A67aC1D`](https://sepolia.basescan.org/address/0x93560481FE085E4Fd1A0f0bAb2E625118A67aC1D) |
-
----
-
-## Quick start
-
-### 1. Install
-
-```bash
-git clone https://github.com/vishwanetwork/VAEB
-cd VAEB
-npm install
-```
-
-### 2. Configure
-
-```bash
-cp .env.example .env
-```
-
-Fill in `.env`:
-
-```env
-OWNER_PRIVATE_KEY=0x<owner-key>       # User who signs intents
-AGENT_PRIVATE_KEY=0x<agent-key>       # Agent EOA that submits transactions
-OWNER_ADDRESS=0x<owner-address>
-BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
-CHAIN_ID=84532
-
-# AI chat backend (pick one)
-OPENAI_API_KEY=sk-...
-# or
-DEEPSEEK_API_KEY=sk-...
-```
-
-Generate wallets if needed:
-
-```bash
-node -e "const {ethers}=require('ethers'); const w=ethers.Wallet.createRandom(); console.log(w.address, w.privateKey)"
-```
-
-Fund both with Base Sepolia ETH (owner needs ~0.01, agent needs ~0.001):
-- https://faucet.quicknode.com/base/sepolia
-- https://www.alchemy.com/faucets/base-sepolia
-
-### 3. Build TypeScript packages
-
-```bash
-npm run build
-```
-
-### 4. Run the ZK demo (standalone)
-
-```bash
-node scripts/demo-zkproof.js
-```
-
-Expected output:
-
-```
-✅ Proof generated in 12.3s
-Off-chain verification: ✅ VALID
-→ AgentWallet.executeWithProof() confirmed in block 37597574
-AgentWallet USDC: 900.0 (was 1000.0)
-Recipient USDC:   100.0 (was 0.0)
-✅ ALL CHECKS PASSED — real ZK proof verified on-chain!
-```
-
-### 5. Run the full stack (chat UI + agent)
-
-Open four terminals:
-
-**Terminal 1 — Prover service** (generates Groth16 proofs):
-```bash
-cd packages/prover-service
-npm start
-# Listening on http://localhost:3001
-# POST /prove  POST /verify  GET /health
-```
-
-**Terminal 2 — Express backend** (AI agent + MCP tool bridge):
-```bash
-cd packages/server
-npm run dev
-# Listening on http://localhost:3002
-# Requires OPENAI_API_KEY or DEEPSEEK_API_KEY in .env
-```
-
-**Terminal 3 — Frontend** (React chat UI):
-```bash
-cd packages/frontend
-npm run dev
-# Open http://localhost:5173
-```
-
-Then open [http://localhost:5173](http://localhost:5173), connect MetaMask, and chat with the agent. Example prompts:
-
-- *"What's my wallet balance?"*
-- *"Hire Alice to buy groceries for 25 USDC"*
-- *"Send 10 USDC to 0x..."*
-
-The agent will ask you to sign the intent in MetaMask, then generate a ZK proof and execute it on-chain automatically.
 
 ---
 
@@ -178,20 +198,23 @@ The agent will ask you to sign the intent in MetaMask, then generate a ZK proof 
 
 ### `@vaeb/intent-sdk`
 
-Builds IntentBundles, derives calldata, computes intent IDs.
+Builds IntentBundles, derives calldata, computes Poseidon commitments, generates ZKIntent EIP-712 typed data.
 
 ```typescript
-import { createIntentBundle, deriveCalldata, computeIntentId } from '@vaeb/intent-sdk';
+import { createIntentBundle, deriveCalldata, getZKIntentTypedData } from '@vaeb/intent-sdk';
 
 const bundle = createIntentBundle({
   actions: [{ type: 'TRANSFER', token: 'USDC', amount: 100, recipient: '0x...' }],
   chainId: 84532,
-  walletAddress: '0x...',
+  walletAddress: '0x...agentWallet',
   expiryMinutes: 10,
 });
 
-const derived = deriveCalldata(bundle, 'base_sepolia');
-const intentId = computeIntentId(bundle);
+// Non-custodial: derives transferFrom(owner, recipient, amount) calldata
+const derived = deriveCalldata(bundle, 'base_sepolia', '0x...ownerAddress');
+
+// EIP-712 typed data for user to sign
+const eip712 = getZKIntentTypedData(nonce, expiry, commitmentHex, walletAddress, chainId);
 ```
 
 ### `@vaeb/mcp-server`
@@ -234,20 +257,6 @@ This builds the server, validates env vars and deployed contracts, then prints t
 
 Add this to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows).
 
-**Run in dev mode:**
-
-```bash
-cd packages/mcp-server
-npm run dev
-```
-
-**Run integration tests:**
-
-```bash
-cd packages/mcp-server
-npm run test:integration   # 36 tests across all tool categories
-```
-
 ### `prover-service`
 
 HTTP service wrapping snarkjs. The MCP server and Express backend call `POST /prove` to generate Groth16 proofs.
@@ -263,20 +272,10 @@ The MCP server falls back to `executeDirectly()` (signature-only, no ZK proof) i
 
 Full-stack demo: React chat UI where you can talk to an AI agent that executes real on-chain payments.
 
-Requires the prover service running on port 3001 (see Quick start step 5).
-
-```bash
-# Terminal 1 — prover service (port 3001)
-cd packages/prover-service && npm start
-
-# Terminal 2 — Express backend (port 3002)
-cd packages/server && npm run dev
-
-# Terminal 3 — frontend (port 5173)
-cd packages/frontend && npm run dev
-```
-
-The frontend connects MetaMask, shows wallet balances, and lets you chat with the agent. The agent uses the MCP tool pipeline to construct, prove, and execute intents.
+The frontend flow:
+1. Connect MetaMask → chat with agent
+2. Agent creates intent → frontend shows payment card
+3. User clicks "Sign & Pay" → approves USDC → signs ZKIntent → agent executes
 
 ### RentaHuman — x402 marketplace demo
 
@@ -284,11 +283,10 @@ The built-in **RentaHuman** marketplace shows how VAEB combines ZK-verified exec
 
 1. AI agent calls `search_marketplace` to find available humans
 2. Agent calls `hire_human` — this triggers an **x402 payment request** before the intent is created
-3. User approves the payment in MetaMask (USDC on Base Sepolia)
-4. VAEB generates a Groth16 ZK proof binding the payment intent to the calldata
-5. `AgentWallet.executeWithProof()` verifies the proof on-chain and transfers USDC
-
-The x402 layer ensures the AI agent pays for API access (per hire request) before any on-chain action occurs. No payment = no service. This makes VAEB MCP tools natively monetizable — any AI agent (Claude Desktop, Cursor, custom) that calls `hire_human` automatically pays the marketplace fee.
+3. User approves USDC spending for the AgentWallet (ERC-20 approve)
+4. User signs `ZKIntent(nonce, expiry, commitment)` via EIP-712 in MetaMask
+5. VAEB generates a Groth16 ZK proof binding the payment intent to the calldata
+6. `AgentWallet.executeWithProof()` verifies the proof on-chain and calls `transferFrom(user, recipient, amount)`
 
 Try it in the chat UI: *"I need someone to walk my dog"*
 
@@ -297,21 +295,22 @@ Try it in the chat UI: *"I need someone to walk my dog"*
 ## Execution flow
 
 ```
-┌──────────┐   sign intent    ┌──────────┐  POST /prove   ┌──────────────────┐
-│  User /  │ ──────────────▶  │  Agent   │ ─────────────▶ │  prover-service  │
-│ Frontend │                  │(MCP/API) │ ◀───────────── │  (snarkjs)       │
-└──────────┘                  └────┬─────┘  Groth16 proof └──────────────────┘
-                                   │
-                                   │ executeWithProof(proof, sig, publicInputs, calls)
-                                   ▼
-                          ┌────────────────────┐
-                          │   AgentWallet.sol  │
-                          │  1. verify proof   │
-                          │  2. recover sig    │
-                          │  3. check nonce    │
-                          │  4. check expiry   │
-                          │  5. multicall      │
-                          └────────────────────┘
+┌──────────┐   approve + sign   ┌──────────┐  POST /prove   ┌──────────────────┐
+│  User /  │ ──────────────────▶ │  Agent   │ ─────────────▶ │  prover-service  │
+│ Frontend │  1. ERC-20 approve │(MCP/API) │ ◀───────────── │  (snarkjs)       │
+│          │  2. ZKIntent sig   └────┬─────┘  Groth16 proof └──────────────────┘
+└──────────┘                         │
+                                     │ executeWithProof(proof, sig, publicInputs, calls)
+                                     ▼
+                            ┌────────────────────┐
+                            │   AgentWallet.sol  │
+                            │  1. verify proof   │
+                            │  2. recover sig    │
+                            │  3. check nonce    │
+                            │  4. check expiry   │
+                            │  5. transferFrom   │
+                            │     (user→recip)   │
+                            └────────────────────┘
 ```
 
 If the prover service is unavailable, execution falls back to `executeDirectly()` — ECDSA signature only, no ZK proof.
@@ -322,10 +321,10 @@ If the prover service is unavailable, execution falls back to `executeDirectly()
 
 ### AgentWallet
 
-The core ERC-8150 smart wallet. Two execution paths:
+The core ERC-8150 smart wallet. Non-custodial — the agent executes on behalf of the owner.
 
 ```solidity
-// Full ZK path
+// Full ZK path — agent submits proof, contract calls transferFrom(owner, ...)
 function executeWithProof(
     bytes calldata proof,
     bytes calldata signature,
@@ -333,7 +332,7 @@ function executeWithProof(
     Call[] calldata calls
 ) external;
 
-// Fallback — signature only
+// Fallback — signature only, no ZK proof
 function executeDirectly(
     bytes calldata signature,
     bytes32 nonce,
@@ -341,6 +340,8 @@ function executeDirectly(
     Call[] calldata calls
 ) external;
 ```
+
+The user signs `ZKIntent(bytes32 nonce, uint256 expiry, bytes32 commitment)` via EIP-712, where `commitment` is the Poseidon hash of the intent bundle.
 
 ### AgentWalletFactory
 
@@ -351,8 +352,6 @@ function createWallet(address owner, address agent, bytes32 salt) returns (addre
 function predictWalletAddress(address owner, address agent, bytes32 salt) view returns (address);
 function getWallets(address owner) view returns (address[]);
 ```
-
-Use the `create_wallet` / `predict_wallet` / `get_wallets` MCP tools (or the scripts directly) to manage wallets.
 
 ### Groth16VerifierAdapter
 
@@ -415,13 +414,10 @@ cp build/Groth16Verifier.sol ../contracts/src/
 
 | Script | What it does |
 |---|---|
-| `node scripts/deploy.js` | Deploy contracts to Base Sepolia, write `deployments.json` |
+| `node scripts/deploy.js` | Deploy contracts (chain-configurable via `DEFAULT_CHAIN`) |
 | `node scripts/deploy-mcp.js` | Build MCP server, print Claude Desktop config |
-| `node scripts/deploy-mcp.js --no-build` | Skip build, just validate + print config |
-| `node scripts/demo-zkproof.js` | Full end-to-end ZK demo on Base Sepolia |
+| `node scripts/demo-zkproof.js` | Full end-to-end ZK demo (real Groth16, non-custodial) |
 | `node scripts/demo-live.js` | Simple demo using `executeDirectly()` |
-| `node scripts/register-agent.js` | Register agent EOA with the factory |
-| `node scripts/test-contracts.js` | Test deployed contracts |
 | `node scripts/test-mcp-tools.js` | Smoke-test MCP tool calls |
 
 ---
@@ -432,12 +428,11 @@ cp build/Groth16Verifier.sol ../contracts/src/
 |---|---|
 | `Missing circuit artifact: WASM` | Rebuild the circuit (see above) |
 | `InvalidProof()` on-chain | `.zkey`, `.wasm`, and `Groth16Verifier.sol` must come from the same trusted setup |
-| `InvalidSignature()` on-chain | EIP-712 domain separator mismatch — check wallet address |
-| `Tool X is already registered` | Duplicate in `tool-registry.ts` — check for repeated tool names |
-| `deployed but has no code` | L2 RPC propagation delay — script retries automatically |
+| `InvalidSignature()` on-chain | EIP-712 domain separator mismatch — check wallet address and ZKIntent types |
+| `deployed but has no code` | L2 RPC propagation delay — deploy script retries automatically |
 | `INSUFFICIENT_FUNDS` | Owner needs ~0.01 ETH, agent needs ~0.001 ETH on Base Sepolia |
-| Prover unavailable | MCP server falls back to `executeDirectly()` automatically |
-| `execution reverted` from factory | Check ABI — `walletCount(address owner)` not `walletCount()` |
+| Prover unavailable | Falls back to `executeDirectly()` automatically |
+| `NonceAlreadyUsed` | Intent was already executed — each nonce is single-use |
 
 ---
 

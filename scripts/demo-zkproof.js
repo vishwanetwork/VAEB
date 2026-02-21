@@ -72,10 +72,8 @@ function loadArtifact(contractName) {
 }
 
 // ─── EIP-712 Constants (must match AgentWallet.sol) ───────────
-const INTENT_BUNDLE_TYPEHASH = ethers.keccak256(
-  ethers.toUtf8Bytes(
-    "IntentBundle(string version,uint256 chainId,bytes32 nonce,uint256 expiry,address payer,ActionEntry[] actions)ActionEntry(string actionType,address token,address to,uint256 amount)"
-  )
+const ZK_INTENT_TYPEHASH = ethers.keccak256(
+  ethers.toUtf8Bytes("ZKIntent(bytes32 nonce,uint256 expiry,bytes32 commitment)")
 );
 
 // ─── Poseidon hash (matches circuit) ──────────────────────────
@@ -290,11 +288,16 @@ async function main() {
   // ═══════════════════════════════════════════════════════════
   // STEP 2: Fund the wallet
   // ═══════════════════════════════════════════════════════════
-  console.log("═══ STEP 2: FUND WALLET ═════════════════════════════════════\n");
+  console.log("═══ STEP 2: FUND OWNER (NON-CUSTODIAL) ══════════════════════\n");
 
-  const mintTx = await usdc.connect(owner).mint(walletAddr, ethers.parseUnits("1000", 6), { nonce: ownerNonce++ });
+  const mintTx = await usdc.connect(owner).mint(owner.address, ethers.parseUnits("1000", 6), { nonce: ownerNonce++ });
   await mintTx.wait();
-  console.log(`   ✅ Minted 1000 USDC to AgentWallet\n`);
+  console.log(`   ✅ Minted 1000 USDC to owner (${owner.address})`);
+
+  // ERC-8150 non-custodial: owner approves AgentWallet to transferFrom
+  const approveTx = await usdc.connect(owner).approve(walletAddr, ethers.parseUnits("1000", 6), { nonce: ownerNonce++ });
+  await approveTx.wait();
+  console.log(`   ✅ Owner approved AgentWallet to spend up to 1000 USDC\n`);
 
   // ═══════════════════════════════════════════════════════════
   // STEP 3: Build intent + derive calldata
@@ -310,9 +313,9 @@ async function main() {
   const intentNonce = ethers.zeroPadValue(ethers.hexlify(ethers.randomBytes(31)), 32);
   const expiry = Math.floor(Date.now() / 1000) + 600;
 
-  // Derive calldata: ERC20.transfer(recipient, amount)
-  const erc20Iface = new ethers.Interface(["function transfer(address to, uint256 amount) returns (bool)"]);
-  const transferCalldata = erc20Iface.encodeFunctionData("transfer", [recipient, transferAmount]);
+  // Derive calldata: ERC20.transferFrom(owner, recipient, amount) — non-custodial
+  const erc20Iface = new ethers.Interface(["function transferFrom(address from, address to, uint256 amount) returns (bool)"]);
+  const transferCalldata = erc20Iface.encodeFunctionData("transferFrom", [owner.address, recipient, transferAmount]);
 
   const calls = [{ target: usdcAddr, value: 0n, data: transferCalldata }];
   const callsHash = ethers.keccak256(
@@ -517,7 +520,8 @@ async function main() {
     expiry: BigInt(publicSignals[6]),
   };
 
-  // Owner signs the intent commitment (EIP-712)
+  // Owner signs ZKIntent(nonce, expiry, commitment) via EIP-712
+  // This matches the ZK_INTENT_TYPEHASH in AgentWallet.sol
   const EIP712_DOMAIN_TYPEHASH = ethers.keccak256(
     ethers.toUtf8Bytes("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
   );
@@ -528,12 +532,20 @@ async function main() {
     )
   );
 
+  // ZKIntent struct hash: keccak256(abi.encode(ZK_INTENT_TYPEHASH, nonce, expiry, commitment))
+  const zkIntentStructHash = ethers.keccak256(
+    ethers.AbiCoder.defaultAbiCoder().encode(
+      ["bytes32", "bytes32", "uint256", "bytes32"],
+      [ZK_INTENT_TYPEHASH, intentNonce, expiry, publicInputsStruct.commitment]
+    )
+  );
+
   const digest = ethers.keccak256(
-    ethers.solidityPacked(["bytes1", "bytes1", "bytes32", "bytes32"], ["0x19", "0x01", domainSeparator, publicInputsStruct.commitment])
+    ethers.solidityPacked(["bytes1", "bytes1", "bytes32", "bytes32"], ["0x19", "0x01", domainSeparator, zkIntentStructHash])
   );
   const sig = owner.signingKey.sign(digest);
   const signature = ethers.Signature.from(sig).serialized;
-  console.log(`✍️  Owner signed commitment`);
+  console.log(`✍️  Owner signed ZKIntent(nonce, expiry, commitment)`);
   console.log(`   Signature: ${signature.slice(0, 20)}...${signature.slice(-8)}\n`);
 
   // Agent submits the transaction
@@ -627,13 +639,14 @@ async function main() {
 
   // Base Sepolia public RPC is load-balanced — reads right after a tx may
   // hit a stale node. Retry with delays to allow state propagation.
-  let finalBal, recipBal, nonceUsed;
+  // Non-custodial: check owner's balance (funds were transferFrom'd out of owner)
+  let ownerFinalBal, recipBal, nonceUsed;
   for (let attempt = 1; attempt <= 5; attempt++) {
-    finalBal = await usdc.balanceOf(walletAddr);
+    ownerFinalBal = await usdc.balanceOf(owner.address);
     recipBal = await usdc.balanceOf(recipient);
     nonceUsed = await walletContract.isNonceUsed(intentNonce);
 
-    if (nonceUsed && finalBal !== ethers.parseUnits("1000", 6)) {
+    if (nonceUsed && ownerFinalBal !== ethers.parseUnits("1000", 6)) {
       break; // State has propagated
     }
     if (attempt < 5) {
@@ -642,14 +655,13 @@ async function main() {
     }
   }
 
-  console.log(`   AgentWallet USDC: ${ethers.formatUnits(finalBal, 6)} (was 1000.0)`);
-  console.log(`   Recipient USDC:   ${ethers.formatUnits(recipBal, 6)} (was 0.0)`);
-  console.log(`   Nonce used:       ${nonceUsed}`);
+  console.log(`   Owner USDC:     ${ethers.formatUnits(ownerFinalBal, 6)} (was 1000.0)`);
+  console.log(`   Recipient USDC: ${ethers.formatUnits(recipBal, 6)} (was 0.0)`);
+  console.log(`   Nonce used:     ${nonceUsed}`);
 
-  if (finalBal === ethers.parseUnits("900", 6) && recipBal === ethers.parseUnits("100", 6) && nonceUsed) {
-    console.log("\n   ✅ ALL CHECKS PASSED — real ZK proof verified on-chain!\n");
+  if (ownerFinalBal === ethers.parseUnits("900", 6) && recipBal === ethers.parseUnits("100", 6) && nonceUsed) {
+    console.log("\n   ✅ ALL CHECKS PASSED — real ZK proof verified on-chain (non-custodial)!\n");
   } else if (nonceUsed) {
-    // Nonce was marked but balances may still be propagating
     console.log("\n   ⚠️  Nonce marked as used but balances unexpected — may need more time to propagate");
     console.log("   Check on BaseScan for the actual token transfer events.\n");
   } else {

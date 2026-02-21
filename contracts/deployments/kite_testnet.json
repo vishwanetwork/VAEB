@@ -1,0 +1,14 @@
+{
+  "network": "kite_testnet",
+  "chainId": 2368,
+  "timestamp": "2026-02-21T06:43:16.642Z",
+  "contracts": {
+    "MockZKVerifier": "0x1ACE1d583fA07e67728C6Bab7091bc2954ab2308",
+    "MockUSDC": "0xE6725aAf7E8495a5952B0b89b3D51BCC5aeF4D3a",
+    "AgentWallet": "0x517cbec020c79034cB7F3A2eeA843B17e3744cd3"
+  },
+  "wallets": {
+    "owner": "0x77A93ecD2437DA60aAFDBF595e74e0317b0d0B47",
+    "agent": "0x17C3771F0250b2774AA11b793Deb523d2D914E03"
+  }
+}

@@ -50,8 +50,13 @@ function getMetaMask(): any {
   return null;
 }
 
+const ERC20_ABI = [
+  'function approve(address spender, uint256 amount) returns (bool)',
+];
+
 const EXEC_STEPS = [
-  { label: 'EIP-712 Signature', desc: 'Requesting signature from wallet...' },
+  { label: 'Token Approval', desc: 'Approving USDC spending for AgentWallet...' },
+  { label: 'EIP-712 Signature', desc: 'Requesting ZKIntent signature from wallet...' },
   { label: 'Backend Execution', desc: 'Submitting to MCP backend for on-chain execution...' },
 ];
 
@@ -211,7 +216,7 @@ export default function App() {
       setShowSuggestions(true);
 
       // Load balances non-blocking
-      fetchBalances(addr)
+      fetchBalances(addr, activeChain.key)
         .then(bals => setBalances(bals))
         .catch(err => console.error('Balance fetch failed:', err));
 
@@ -235,35 +240,47 @@ export default function App() {
   const refreshBalances = useCallback(async () => {
     if (!address) return;
     try {
-      const bals = await fetchBalances(address);
+      const bals = await fetchBalances(address, activeChain.key);
       setBalances(bals);
     } catch (err) {
       console.error('Balance refresh failed:', err);
     }
-  }, [address]);
+  }, [address, activeChain]);
 
   // ── Sign & Execute intent with ZK verification log ─────────
 
   const handleApprove = useCallback(async (msgId: string, intent: NonNullable<ChatResponse['intent']>) => {
     if (!signer) return;
 
-    // Step 0: Signing
+    // Step 0: Token Approval (ERC-8150 non-custodial: user approves AgentWallet to spend USDC)
     setMessages(prev => prev.map(m =>
       m.id === msgId ? { ...m, execStep: 0, intent: undefined } : m
     ));
 
     try {
-      const { domain, types, message } = intent.eip712;
-      const signature = await signer.signTypedData(domain, types, message);
+      // Approve AgentWallet to transferFrom user's USDC
+      if (intent.approvalToken && intent.approvalTarget && intent.approvalAmount) {
+        const erc20 = new ethers.Contract(intent.approvalToken, ERC20_ABI, signer);
+        const approveTx = await erc20.approve(intent.approvalTarget, intent.approvalAmount);
+        await approveTx.wait();
+      }
 
-      // Step 1: Backend Execution (real path will be returned by the server)
+      // Step 1: EIP-712 Signature (ZKIntent: nonce, expiry, commitment)
       setMessages(prev => prev.map(m =>
         m.id === msgId ? { ...m, execStep: 1 } : m
       ));
 
+      const { domain, types, message } = intent.eip712;
+      const signature = await signer.signTypedData(domain, types, message);
+
+      // Step 2: Backend Execution
+      setMessages(prev => prev.map(m =>
+        m.id === msgId ? { ...m, execStep: 2 } : m
+      ));
+
       const result = await executeChatIntent(intent.reviewId, signature, selectedChainKey);
 
-      // Step 4: Done — attach result + MCP tool calls from execution
+      // Done — attach result + MCP tool calls from execution
       setMessages(prev => prev.map(m =>
         m.id === msgId ? {
           ...m,
@@ -347,7 +364,7 @@ export default function App() {
             </div>
             {connected && balances && (
               <div className="balance-pill">
-                <span className="balance-pill-val">{balances.agent.usdc}</span>
+                <span className="balance-pill-val">{balances.user.usdc}</span>
                 <span className="balance-pill-unit">USDC</span>
               </div>
             )}

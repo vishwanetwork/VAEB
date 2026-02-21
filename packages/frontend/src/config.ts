@@ -22,8 +22,8 @@ export const CHAIN_CONFIGS: Record<string, ChainConfig> = {
     explorer: 'https://sepolia.basescan.org',
     nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
     contracts: {
-      AgentWallet: '0x99D238c22499e679e9d45578245083FE690C8B5f',
-      MockUSDC: '0x93560481FE085E4Fd1A0f0bAb2E625118A67aC1D',
+      AgentWallet: '0x6Ed542D19aeE41F50a31F2e84db3bB25e0B85C77',
+      MockUSDC: '0xbff8F4E34c275ba115FCaeAF6EC515649f93ceA8',
     },
   },
   kite_testnet: {
@@ -36,8 +36,8 @@ export const CHAIN_CONFIGS: Record<string, ChainConfig> = {
     nativeCurrency: { name: 'KITE', symbol: 'KITE', decimals: 18 },
     contracts: {
       // Filled in after running: node scripts/deploy-kite.js
-      AgentWallet: '',
-      MockUSDC: '',
+      AgentWallet: '0x517cbec020c79034cB7F3A2eeA843B17e3744cd3',
+      MockUSDC: '0xE6725aAf7E8495a5952B0b89b3D51BCC5aeF4D3a',
     },
   },
 };

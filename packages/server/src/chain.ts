@@ -1,5 +1,5 @@
 import { ethers } from 'ethers';
-import { CONFIG } from './config';
+import { CONFIG, type ChainConfig } from './config';
 
 const WALLET_ABI = [
   'function owner() view returns (address)',
@@ -18,35 +18,56 @@ const ERC20_ABI = [
   'function transfer(address to, uint256 amount) returns (bool)',
 ];
 
-let provider: ethers.JsonRpcProvider;
-let agentSigner: ethers.Wallet;
+// Cache providers and signers by RPC URL
+const providerCache = new Map<string, ethers.JsonRpcProvider>();
+const signerCache = new Map<string, ethers.Wallet>();
 
-export function getProvider(): ethers.JsonRpcProvider {
-  if (!provider) {
-    provider = new ethers.JsonRpcProvider(CONFIG.rpcUrl);
+export function getProvider(rpcUrl?: string): ethers.JsonRpcProvider {
+  const url = rpcUrl || CONFIG.rpcUrl;
+  if (!providerCache.has(url)) {
+    providerCache.set(url, new ethers.JsonRpcProvider(url));
   }
-  return provider;
+  return providerCache.get(url)!;
 }
 
-export function getAgentSigner(): ethers.Wallet {
-  if (!agentSigner) {
-    agentSigner = new ethers.Wallet(CONFIG.agentPrivateKey, getProvider());
+export function getAgentSigner(rpcUrl?: string): ethers.Wallet {
+  const url = rpcUrl || CONFIG.rpcUrl;
+  if (!signerCache.has(url)) {
+    signerCache.set(url, new ethers.Wallet(CONFIG.agentPrivateKey, getProvider(url)));
   }
-  return agentSigner;
+  return signerCache.get(url)!;
 }
 
-export function getWalletContract(signerOrProvider?: ethers.Signer | ethers.Provider): ethers.Contract {
+export function getWalletContract(signerOrProvider?: ethers.Signer | ethers.Provider, contractAddress?: string): ethers.Contract {
   return new ethers.Contract(
-    CONFIG.contracts.AgentWallet,
+    contractAddress || CONFIG.contracts.AgentWallet,
     WALLET_ABI,
     signerOrProvider || getProvider()
   );
 }
 
-export function getUsdcContract(signerOrProvider?: ethers.Signer | ethers.Provider): ethers.Contract {
+export function getUsdcContract(signerOrProvider?: ethers.Signer | ethers.Provider, contractAddress?: string): ethers.Contract {
   return new ethers.Contract(
-    CONFIG.contracts.MockUSDC,
+    contractAddress || CONFIG.contracts.MockUSDC,
     ERC20_ABI,
     signerOrProvider || getProvider()
   );
+}
+
+// ─── Chain-aware helpers ─────────────────────────────────────
+
+export function getProviderForChain(chain: ChainConfig): ethers.JsonRpcProvider {
+  return getProvider(chain.rpcUrl);
+}
+
+export function getAgentSignerForChain(chain: ChainConfig): ethers.Wallet {
+  return getAgentSigner(chain.rpcUrl);
+}
+
+export function getWalletContractForChain(chain: ChainConfig, signerOrProvider?: ethers.Signer | ethers.Provider): ethers.Contract {
+  return getWalletContract(signerOrProvider || getProviderForChain(chain), chain.contracts.AgentWallet);
+}
+
+export function getUsdcContractForChain(chain: ChainConfig, signerOrProvider?: ethers.Signer | ethers.Provider): ethers.Contract {
+  return getUsdcContract(signerOrProvider || getProviderForChain(chain), chain.contracts.MockUSDC);
 }

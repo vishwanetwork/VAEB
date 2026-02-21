@@ -55,6 +55,8 @@ test("marketplaceTools.execute_payment falls back to executeDirectly", async () 
     amount: "10",
     task: "Buy groceries",
     recipient: TEST_ADDRESSES.owner,
+    payer: TEST_ADDRESSES.agentWallet,
+    token: TEST_ADDRESSES.usdc,
   });
 
   const result = await marketplaceTools.handle("execute_payment", {

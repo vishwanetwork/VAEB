@@ -140,6 +140,14 @@ export const EIP712_TYPES = {
   ],
 } as const;
 
+export const EIP712_ZK_INTENT_TYPES = {
+  ZKIntent: [
+    { name: "nonce", type: "bytes32" },
+    { name: "expiry", type: "uint256" },
+    { name: "commitment", type: "bytes32" },
+  ],
+} as const;
+
 // ─── Default Configuration ──────────────────────────────────────
 
 export const DEFAULTS = {

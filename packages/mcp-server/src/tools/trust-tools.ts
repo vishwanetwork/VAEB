@@ -195,13 +195,15 @@ async function discoverAgents(args: any, config: Config) {
     agents = DEMO_AGENTS;
   }
 
-  // fetch reputation data
-  const enriched = await Promise.all(
-    agents.map(async (a) => {
-      const rep = await fetchReputation(a.agentId, chainKey, contracts).catch(() => null);
-      return { ...a, reputation: rep };
-    })
-  );
+  // fetch reputation data (skip for demo agents — they already have reputation populated)
+  const enriched = source === "demo"
+    ? agents.map((a) => ({ ...a }))
+    : await Promise.all(
+        agents.map(async (a) => {
+          const rep = await fetchReputation(a.agentId, chainKey, contracts).catch(() => a.reputation ?? null);
+          return { ...a, reputation: rep };
+        })
+      );
 
   // filter and score
   const filtered = enriched.filter((a) => {

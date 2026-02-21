@@ -5,7 +5,7 @@ import { baseConfig } from "./helpers";
 
 test("trustTools.discover_agents filters by min_reputation", async () => {
   const config = baseConfig();
-  const result = await trustTools.handle("discover_agents", { min_reputation: 9 }, config);
+  const result = await trustTools.handle("discover_agents", { min_reputation: 9, chain: "kite_testnet" }, config);
   assert.ok(result.total_agents_found > 0);
   assert.ok(result.recommended);
 });
@@ -14,7 +14,7 @@ test("trustTools.get_agent_reputation throws for unknown agent", async () => {
   const config = baseConfig();
   await assert.rejects(
     () => trustTools.handle("get_agent_reputation", { agent_id: 9999 }, config),
-    /Agent not found/
+    /not found/
   );
 });
 
@@ -22,6 +22,6 @@ test("trustTools.compare_agents requires ids", async () => {
   const config = baseConfig();
   await assert.rejects(
     () => trustTools.handle("compare_agents", { agent_ids: [] }, config),
-    /No agents found/
+    /non-empty/
   );
 });

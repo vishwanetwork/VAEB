@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { ethers } from 'ethers';
-import { CONFIG } from './config';
-import { getProvider, getAgentSigner, getWalletContract, getUsdcContract } from './chain';
+import { CONFIG, getChainConfig } from './config';
+import { getProvider, getAgentSigner, getWalletContract, getUsdcContract, getProviderForChain, getUsdcContractForChain } from './chain';
 
 const router = Router();
 
@@ -22,15 +22,17 @@ const intentStore = new Map<string, StoredIntent>();
 
 // ─── GET /api/health ─────────────────────────────────────────
 
-router.get('/health', async (_req: Request, res: Response) => {
+router.get('/health', async (req: Request, res: Response) => {
   try {
-    const provider = getProvider();
+    const chainKey = req.query.chain as string | undefined;
+    const chain = getChainConfig(chainKey);
+    const provider = getProviderForChain(chain);
     const network = await provider.getNetwork();
     res.json({
       status: 'ok',
-      chain: 'base_sepolia',
+      chain: chain.key,
       chainId: Number(network.chainId),
-      agentWallet: CONFIG.contracts.AgentWallet,
+      agentWallet: chain.contracts.AgentWallet,
       agent: getAgentSigner().address,
     });
   } catch (err: any) {
@@ -43,30 +45,34 @@ router.get('/health', async (_req: Request, res: Response) => {
 router.get('/balances/:address', async (req: Request, res: Response) => {
   try {
     const { address } = req.params;
+    const chainKey = req.query.chain as string | undefined;
+
     if (!ethers.isAddress(address)) {
       res.status(400).json({ error: 'Invalid address' });
       return;
     }
 
-    const provider = getProvider();
-    const usdc = getUsdcContract();
+    const chain = getChainConfig(chainKey);
+    const provider = getProviderForChain(chain);
+    const usdc = getUsdcContractForChain(chain);
 
     const [userEth, userUsdc, agentEth, agentUsdc] = await Promise.all([
       provider.getBalance(address),
       usdc.balanceOf(address),
-      provider.getBalance(CONFIG.contracts.AgentWallet),
-      usdc.balanceOf(CONFIG.contracts.AgentWallet),
+      provider.getBalance(chain.contracts.AgentWallet),
+      usdc.balanceOf(chain.contracts.AgentWallet),
     ]);
 
     res.json({
-      agentWallet: CONFIG.contracts.AgentWallet,
+      chain: chain.key,
+      agentWallet: chain.contracts.AgentWallet,
       user: {
         address,
         eth: ethers.formatEther(userEth),
         usdc: ethers.formatUnits(userUsdc, 6),
       },
       agent: {
-        address: CONFIG.contracts.AgentWallet,
+        address: chain.contracts.AgentWallet,
         eth: ethers.formatEther(agentEth),
         usdc: ethers.formatUnits(agentUsdc, 6),
       },

@@ -18,6 +18,7 @@ export {
   calculateExpiry,
   createIntentBundle,
   getEIP712TypedData,
+  getZKIntentTypedData,
   signIntentBundle,
   computeIntentId,
   serializeBundle,

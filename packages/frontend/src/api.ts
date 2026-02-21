@@ -1,7 +1,8 @@
 import { CONFIG } from './config';
 
-export async function fetchBalances(address: string) {
-  const res = await fetch(`${CONFIG.apiUrl}/balances/${address}`);
+export async function fetchBalances(address: string, chain?: string) {
+  const params = chain ? `?chain=${chain}` : '';
+  const res = await fetch(`${CONFIG.apiUrl}/balances/${address}${params}`);
   return res.json();
 }
 
@@ -35,16 +36,15 @@ export interface ChatResponse {
         chainId: number;
         verifyingContract: string;
       };
-      types: {
-        DirectExecution: Array<{ name: string; type: string }>;
-      };
+      types: Record<string, Array<{ name: string; type: string }>>;
       primaryType: string;
-      message: {
-        nonce: string;
-        expiry: number;
-        callsHash: string;
-      };
+      message: Record<string, any>;
     };
+    // ERC-8150 non-custodial: user must approve AgentWallet to spend tokens
+    requires_approval?: boolean;
+    approvalTarget?: string;   // AgentWallet address (spender)
+    approvalToken?: string;    // ERC20 address (USDC)
+    approvalAmount?: string;   // Amount in base units
   };
   sessionId: string;
 }

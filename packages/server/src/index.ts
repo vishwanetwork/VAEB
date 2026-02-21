@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { CONFIG } from './config';
+import { CONFIG, CHAIN_CONFIGS, DEFAULT_CHAIN } from './config';
 import routes from './routes';
 import chatRouter from './chat';
 
@@ -12,9 +12,13 @@ app.use('/api', routes);
 app.use('/api', chatRouter);
 
 app.listen(CONFIG.port, () => {
+  const chains = Object.values(CHAIN_CONFIGS);
   console.log(`\n  VAEB Server`);
   console.log(`  Port:         ${CONFIG.port}`);
-  console.log(`  Chain:        Base Sepolia (${CONFIG.chainId})`);
-  console.log(`  AgentWallet:  ${CONFIG.contracts.AgentWallet}`);
-  console.log(`  Explorer:     ${CONFIG.explorer}\n`);
+  console.log(`  Default:      ${DEFAULT_CHAIN}`);
+  console.log(`  Chains:       ${chains.map(c => `${c.chainName} (${c.chainId})`).join(', ')}`);
+  for (const c of chains) {
+    console.log(`  [${c.key}] AgentWallet: ${c.contracts.AgentWallet}`);
+  }
+  console.log();
 });

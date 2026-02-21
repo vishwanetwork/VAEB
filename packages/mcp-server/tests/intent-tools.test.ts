@@ -4,10 +4,10 @@ import { intentTools } from "../src/tools/intent-tools";
 import { baseConfig, makeContractFactory, FakeProvider, TEST_ADDRESSES } from "./helpers";
 
 const fakeFetch = async () => ({
-  ok: false,
-  status: 503,
-  text: async () => "unavailable",
-  json: async () => ({}),
+  ok: true,
+  status: 200,
+  text: async () => JSON.stringify({ proof: "0x", publicSignals: [], mode: "mock" }),
+  json: async () => ({ proof: "0x", publicSignals: [], mode: "mock" }),
 }) as any;
 
 test("intentTools.create_intent stores bundle and returns id", async () => {

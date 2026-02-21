@@ -17,6 +17,7 @@ import {
   deriveCalldata,
   describeIntent,
   bundleToJSON,
+  getZKIntentTypedData,
   ActionType,
   CHAINS,
   DEFAULTS,
@@ -116,16 +117,16 @@ const intentStore = new Map<
 >();
 
 export const intentTools = {
-  async handle(name: string, args: any, config: Config): Promise<any> {
+  async handle(name: string, args: any, config: Config): Promise<{ result: any; intent?: any }> {
     switch (name) {
       case "create_intent":
         return createIntent(args, config);
       case "execute_intent":
-        return executeIntent(args, config);
+        return { result: await executeIntent(args, config) };
       case "simulate_intent":
-        return simulateIntent(args, config);
+        return { result: await simulateIntent(args, config) };
       case "cancel_intent":
-        return cancelIntent(args, config);
+        return { result: await cancelIntent(args, config) };
       default:
         throw new Error(`Unknown intent tool: ${name}`);
     }
@@ -181,8 +182,8 @@ async function createIntent(args: any, config: Config) {
     expiryMinutes: args.expiry_minutes || 10,
   });
 
-  // Derive the calldata
-  const derived = await deriveCalldata(bundle, chainKey);
+  // Derive the calldata (pass ownerAddress for non-custodial transferFrom)
+  const derived = await deriveCalldata(bundle, chainKey, config.ownerAddress);
 
   // Compute intent ID
   const intentId = computeIntentId(bundle);
@@ -201,17 +202,63 @@ async function createIntent(args: any, config: Config) {
   const serviceFee = `${DEFAULTS.SERVICE_FEE_USDC} USDC`;
   const humanReadable = describeIntent(bundle);
 
+  // Compute Poseidon commitment for ZKIntent signing
+  const commitment = await computePoseidonCommitment(bundle);
+  const commitmentHex = ethers.toBeHex(commitment, 32);
+
+  // Build ZKIntent EIP-712 typed data (user signs commitment, agent executes on behalf)
+  const eip712 = getZKIntentTypedData(
+    bundle.nonce,
+    bundle.expiry,
+    commitmentHex,
+    walletAddress,
+    chain.chainId,
+  );
+
+  // Determine token + amount for approval (first TRANSFER action)
+  const transferAction = bundle.actions.find(a => a.actionType === "TRANSFER");
+  const approvalToken = transferAction?.token || derived.calls[0]?.target;
+  const approvalAmount = transferAction
+    ? transferAction.amount.toString()
+    : undefined;
+
+  const reviewId = ethers.hexlify(ethers.randomBytes(16));
+
   return {
-    intent_id: intentId,
-    chain: chainKey,
-    estimated_output: humanReadable,
-    estimated_gas: estimatedGas,
-    service_fee: serviceFee,
-    requires_signature: true,
-    human_readable: humanReadable,
-    bundle: bundleToJSON(bundle),
-    derived_calls_count: derived.calls.length,
-    expiry: new Date(bundle.expiry * 1000).toISOString(),
+    result: {
+      intent_id: intentId,
+      review_id: reviewId,
+      chain: chainKey,
+      estimated_output: humanReadable,
+      estimated_gas: estimatedGas,
+      service_fee: serviceFee,
+      requires_signature: true,
+      human_readable: humanReadable,
+      bundle: bundleToJSON(bundle),
+      derived_calls_count: derived.calls.length,
+      expiry: new Date(bundle.expiry * 1000).toISOString(),
+    },
+    // ERC-8150: agent spends on behalf of owner — frontend shows approval + signing UI
+    intent: {
+      reviewId,
+      nonce: bundle.nonce,
+      expiry: bundle.expiry,
+      expiryFormatted: new Date(bundle.expiry * 1000).toISOString(),
+      eip712,
+      humanName: "",
+      humanId: "",
+      humanRating: 0,
+      task: humanReadable,
+      amount: transferAction ? ethers.formatUnits(transferAction.amount, 6) : "0",
+      recipient: transferAction?.to || "",
+      chain: chainKey,
+      bundle: bundleToJSON(bundle),
+      requires_approval: true,
+      requires_signature: true,
+      approvalTarget: walletAddress,
+      approvalToken,
+      approvalAmount,
+    },
   };
 }
 

@@ -9,7 +9,7 @@
 import { ethers } from "ethers";
 import type { MCPConfig } from "../handlers";
 import { intentTools } from "./intent-tools";
-import { bundleFromJSON, deriveCalldata } from "@vaeb/intent-sdk";
+import { bundleFromJSON, deriveCalldata, getZKIntentTypedData } from "@vaeb/intent-sdk";
 import { getContract, getProvider } from "./deps";
 
 // ─── Poseidon helper (matches IntentVerifier.circom exactly) ─────────────────
@@ -22,67 +22,7 @@ async function getPoseidon(): Promise<any> {
   return _poseidonFn;
 }
 
-// ─── EIP-712 type hashes (must match AgentWallet.sol exactly) ────────────────
-
-const ACTION_ENTRY_TYPEHASH = ethers.keccak256(
-  ethers.toUtf8Bytes("ActionEntry(string actionType,address token,address to,uint256 amount)")
-);
-
-const INTENT_BUNDLE_TYPEHASH = ethers.keccak256(
-  ethers.toUtf8Bytes(
-    "IntentBundle(string version,uint256 chainId,bytes32 nonce,uint256 expiry,address payer,ActionEntry[] actions)ActionEntry(string actionType,address token,address to,uint256 amount)"
-  )
-);
-
-/**
- * Compute the EIP-712 struct hash for an IntentBundle with one TRANSFER action.
- * This is what the user signs in MetaMask (via eth_signTypedData_v4).
- * The contract's executeWithProof() checks: recover(_hashTypedDataV4(commitment), sig) == owner
- * so commitment must equal this struct hash.
- */
-function computeIntentBundleStructHash(
-  chainId: number,
-  nonce: string,
-  expiry: number,
-  payer: string,
-  token: string,
-  recipient: string,
-  amountBaseUnits: bigint,
-): string {
-  // Hash the single ActionEntry
-  const actionEntryHash = ethers.keccak256(
-    ethers.AbiCoder.defaultAbiCoder().encode(
-      ["bytes32", "bytes32", "address", "address", "uint256"],
-      [
-        ACTION_ENTRY_TYPEHASH,
-        ethers.keccak256(ethers.toUtf8Bytes("TRANSFER")),
-        token,
-        recipient,
-        amountBaseUnits,
-      ]
-    )
-  );
-
-  // EIP-712 array encoding: keccak256(concat of element hashes)
-  // One element array: keccak256(actionEntryHash)
-  const actionsArrayHash = ethers.keccak256(actionEntryHash);
-
-  // IntentBundle struct hash
-  return ethers.keccak256(
-    ethers.AbiCoder.defaultAbiCoder().encode(
-      ["bytes32", "bytes32", "uint256", "bytes32", "uint256", "address", "bytes32"],
-      [
-        INTENT_BUNDLE_TYPEHASH,
-        ethers.keccak256(ethers.toUtf8Bytes("1")), // version
-        chainId,
-        nonce,
-        expiry,
-        payer,
-        actionsArrayHash,
-      ]
-    )
-  );
-}
+// (Old IntentBundle EIP-712 type hashes removed — replaced by ZKIntent typed struct)
 
 // ─── Poseidon helpers (matches IntentVerifier.circom + demo-zkproof.js) ──────
 //
@@ -237,14 +177,15 @@ export interface StoredIntent {
   nonce: string;
   expiry: number;
   calls: Array<{ target: string; value: bigint; data: string }>;
-  callsHash: string;
   humanId: string;
   humanName: string;
   amount: string;
   task: string;
   recipient: string;
-  payer: string;   // AgentWallet address — used to reconstruct IntentBundle struct hash
-  token: string;   // ERC20 address — used to reconstruct IntentBundle struct hash
+  payer: string;        // AgentWallet address
+  token: string;        // ERC20 address
+  commitmentHex: string; // Poseidon commitment (hex) — used as publicInputs.commitment
+  userAddress: string;   // Owner EOA — holds funds, signed the ZKIntent
 }
 
 export const intentStore = new Map<string, StoredIntent>();
@@ -331,47 +272,58 @@ async function handleHireHuman(
     expiry_minutes: 10,
   }, config as any);
 
-  const bundle = bundleFromJSON(intentResult.bundle);
-
-  // IMPORTANT: create_intent passes the contract address as the token string, so
-  // deriveCalldata would encode the amount with 18 decimals instead of 6.
-  // We bypass that and build the USDC transfer calldata directly with 6 decimals.
-  const erc20Iface = new ethers.Interface([
-    "function transfer(address to, uint256 amount) returns (bool)",
-  ]);
+  const bundle = bundleFromJSON(intentResult.result.bundle);
   const amountInBaseUnits = ethers.parseUnits(args.amount.toString(), 6);
 
   // Get USDC address from config or derive it
   let usdcAddress = config.contracts?.MockUSDC;
   if (!usdcAddress) {
-    const derived = await deriveCalldata(bundle, intentResult.chain);
+    const derived = await deriveCalldata(bundle, intentResult.result.chain);
     usdcAddress = derived.calls[0]?.target;
   }
 
+  const payerAddr = config.contracts?.AgentWallet ?? "";
+  const chainId = config.chainId || bundle.chainId;
+  const userAddress = config.ownerAddress || "";
+
+  // ERC-8150 non-custodial: user holds funds, AgentWallet calls transferFrom(user, recipient, amount)
+  const erc20Iface = new ethers.Interface([
+    "function transferFrom(address from, address to, uint256 amount) returns (bool)",
+  ]);
   const calls = [{
     target: usdcAddress,
     value: 0n,
-    data: erc20Iface.encodeFunctionData("transfer", [human.address, amountInBaseUnits]),
+    data: erc20Iface.encodeFunctionData("transferFrom", [userAddress, human.address, amountInBaseUnits]),
   }];
 
-  // Compute callsHash matching AgentWallet._hashCalls(): keccak256(abi.encode(calls))
-  const callsHash = ethers.keccak256(
-    ethers.AbiCoder.defaultAbiCoder().encode(
-      ["tuple(address target, uint256 value, bytes data)[]"],
-      [calls]
-    )
+  // Compute Poseidon commitment (matches IntentVerifier.circom exactly)
+  const poseidonCommitment = await computePoseidonCommitment(
+    chainId,
+    bundle.nonce,
+    bundle.expiry,
+    payerAddr,
+    usdcAddress,
+    human.address,
+    amountInBaseUnits,
   );
+  const commitmentHex = ethers.toBeHex(poseidonCommitment, 32);
 
   const reviewId = ethers.hexlify(ethers.randomBytes(16));
 
-  const payerAddr = config.contracts?.AgentWallet ?? "";
-  const chainId = config.chainId || bundle.chainId;
+  // Build ZKIntent EIP-712 typed data for user to sign
+  // User signs ZKIntent(nonce, expiry, commitment) where commitment = Poseidon hash
+  const eip712 = getZKIntentTypedData(
+    bundle.nonce,
+    bundle.expiry,
+    commitmentHex,
+    payerAddr,
+    chainId,
+  );
 
   intentStore.set(reviewId, {
     nonce: bundle.nonce,
     expiry: bundle.expiry,
     calls,
-    callsHash,
     humanId: human.id,
     humanName: human.name,
     amount: args.amount,
@@ -379,65 +331,32 @@ async function handleHireHuman(
     recipient: human.address,
     payer: payerAddr,
     token: usdcAddress,
+    commitmentHex,
+    userAddress,
   });
 
   return {
-    result: `Payment intent created via VAEB MCP. The user needs to sign to approve paying ${args.amount} USDC to ${human.name}. Intent ID: ${intentResult.intent_id}`,
+    result: `Payment intent created via VAEB MCP. The user needs to approve USDC spending and sign to approve paying ${args.amount} USDC to ${human.name}. Intent ID: ${intentResult.result.intent_id}`,
     intent: {
       reviewId,
       nonce: bundle.nonce,
       expiry: bundle.expiry,
       expiryFormatted: new Date(bundle.expiry * 1000).toISOString(),
-      eip712: {
-        domain: {
-          name: "VAEB AgentWallet",
-          version: "1",
-          chainId,
-          verifyingContract: payerAddr,
-        },
-        // User signs an IntentBundle so MetaMask shows the actual transfer details,
-        // not opaque bytes. Matches INTENT_BUNDLE_TYPEHASH in AgentWallet.sol.
-        types: {
-          IntentBundle: [
-            { name: "version",  type: "string" },
-            { name: "chainId",  type: "uint256" },
-            { name: "nonce",    type: "bytes32" },
-            { name: "expiry",   type: "uint256" },
-            { name: "payer",    type: "address" },
-            { name: "actions",  type: "ActionEntry[]" },
-          ],
-          ActionEntry: [
-            { name: "actionType", type: "string" },
-            { name: "token",      type: "address" },
-            { name: "to",         type: "address" },
-            { name: "amount",     type: "uint256" },
-          ],
-        },
-        primaryType: "IntentBundle",
-        message: {
-          version: "1",
-          chainId,
-          nonce: bundle.nonce,
-          expiry: bundle.expiry,
-          payer: payerAddr,
-          actions: [{
-            actionType: "TRANSFER",
-            token: usdcAddress,
-            to: human.address,
-            amount: amountInBaseUnits.toString(),
-          }],
-        },
-      },
+      eip712,
       humanName: human.name,
       humanId: human.id,
       humanRating: human.rating,
       task: args.task_description,
       amount: args.amount,
       recipient: human.address,
-      chain: intentResult.chain,
-      expiry_iso: intentResult.expiry,
-      bundle: intentResult.bundle,
+      chain: intentResult.result.chain,
+      expiry_iso: intentResult.result.expiry,
+      bundle: intentResult.result.bundle,
+      requires_approval: true,
       requires_signature: true,
+      approvalTarget: payerAddr,
+      approvalToken: usdcAddress,
+      approvalAmount: amountInBaseUnits.toString(),
     },
   };
 }
@@ -510,24 +429,25 @@ async function handleExecutePayment(
     throw new Error("Nonce already used — this intent was already executed");
   }
 
-  // ── Step 2: Get before-balance ────────────────────────────
+  // ── Step 2: Get before-balance (non-custodial: check user's EOA) ──
   stepStart = Date.now();
+  const userAddress = intent.userAddress || config.ownerAddress || "";
   let balanceBefore = "0";
-  if (config.contracts.MockUSDC) {
+  if (config.contracts.MockUSDC && userAddress) {
     const usdc = getContract(
       config.contracts.MockUSDC,
       ERC20_BALANCE_ABI,
       provider,
       config.contractFactory
     );
-    const bal = await usdc.balanceOf(config.contracts.AgentWallet);
+    const bal = await usdc.balanceOf(userAddress);
     balanceBefore = ethers.formatUnits(bal, 6);
   }
   steps.push({
-    step: "get_wallet_balance",
+    step: "get_user_balance",
     status: "success",
     durationMs: Date.now() - stepStart,
-    detail: `${balanceBefore} USDC`,
+    detail: `${balanceBefore} USDC (user EOA: ${userAddress.slice(0, 10)}...)`,
   });
 
   // ── Step 3: Build commitment + Poseidon inputs ────────────
@@ -535,43 +455,21 @@ async function handleExecutePayment(
   const proverEndpoint = config.proverEndpoint || "http://localhost:3001";
   const fetchFn = config.fetchFn || fetch;
   const chainId = config.chainId || 84532;
-  const signerAddress = config.ownerAddress || config.contracts.AgentWallet;
+  const signerAddress = userAddress || config.contracts.AgentWallet;
   const tokenAddress = intent.token || config.contracts?.MockUSDC || intent.calls[0].target;
   const amountBaseUnits = ethers.parseUnits(intent.amount, 6);
 
-  // commitment = IntentBundle EIP-712 struct hash (what the user signed).
-  // executeWithProof() verifies: recover(_hashTypedDataV4(commitment), sig) == owner
-  const commitment = computeIntentBundleStructHash(
-    chainId,
-    intent.nonce,
-    intent.expiry,
-    intent.payer,
-    tokenAddress,
-    intent.recipient,
-    amountBaseUnits,
+  // Use stored Poseidon commitment from handleHireHuman (matches what user signed via ZKIntent)
+  const commitment = intent.commitmentHex;
+
+  // Poseidon multicall hash for the ZK circuit
+  const poseidonMulticallHash = await computePoseidonMulticallHash(
+    intent.calls,
+    [amountBaseUnits],  // derivedValues[0] = token amount
   );
 
-  // Poseidon hashes for the ZK circuit — match demo-zkproof.js exactly:
-  //   actionAmounts[0]  = tokenAmount  (not ETH call value)
-  //   derivedValues[0]  = tokenAmount  (circuit constraint: derivedValues[i*2] == actionAmounts[i])
-  const [poseidonCommitment, poseidonMulticallHash] = await Promise.all([
-    computePoseidonCommitment(
-      chainId,
-      intent.nonce,
-      intent.expiry,
-      intent.payer,
-      tokenAddress,
-      intent.recipient,
-      amountBaseUnits,
-    ),
-    computePoseidonMulticallHash(
-      intent.calls,
-      [amountBaseUnits],  // derivedValues[0] = token amount
-    ),
-  ]);
-
   const publicInputsStruct = {
-    commitment,                                         // IntentBundle struct hash
+    commitment,                                         // Poseidon commitment (ZKIntent)
     chainId,
     signerAddress,
     multicallDataHash: ethers.toBeHex(poseidonMulticallHash, 32),
@@ -579,7 +477,7 @@ async function handleExecutePayment(
     expiry: intent.expiry,
   };
 
-  // ── Step 3: Generate ZK proof via prover service ──────────
+  // ── Step 3b: Generate ZK proof via prover service ──────────
   const proverResponse = await fetchFn(`${proverEndpoint}/prove`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -602,7 +500,7 @@ async function handleExecutePayment(
         })),
       },
       publicInputs: {
-        commitment: ethers.toBeHex(poseidonCommitment, 32),
+        commitment,
         chainId,
         signerAddress,
         multicallDataHash: ethers.toBeHex(poseidonMulticallHash, 32),
@@ -612,54 +510,78 @@ async function handleExecutePayment(
     }),
   });
 
-  if (!proverResponse.ok) {
-    const body = await proverResponse.text().catch(() => "");
-    throw new Error(`Prover service error ${proverResponse.status}: ${body}`);
-  }
-
-  const proofResult = await proverResponse.json() as { proof: string; publicSignals: string[]; mode: string };
-  const proofBytes = proofResult.proof;
-  const proofMode = proofResult.mode;
-
-  steps.push({
-    step: "prove_intent",
-    status: "success",
-    durationMs: Date.now() - stepStart,
-    detail: `Groth16 proof generated (${proofMode} mode, ${Date.now() - stepStart}ms)`,
-  });
-
-  // ── Step 4: Execute on-chain via executeWithProof ─────────
-  stepStart = Date.now();
+  let executionPath: "executeWithProof" | "executeDirectly" = "executeWithProof";
   let tx: any;
 
-  tx = await walletContract.executeWithProof(
-    proofBytes,
-    signature,
-    publicInputsStruct,
-    intent.calls,
-    { gasLimit: 500000 }
-  );
+  if (!proverResponse.ok) {
+    // Prover unavailable — fall back to signature-only execution
+    steps.push({
+      step: "prove_intent",
+      status: "fallback",
+      durationMs: Date.now() - stepStart,
+      detail: `Prover returned ${proverResponse.status} — falling back to executeDirectly`,
+    });
 
-  steps.push({
-    step: "executeWithProof",
-    status: "success",
-    durationMs: Date.now() - stepStart,
-    detail: `AgentWallet.executeWithProof() — ${proofMode === "groth16" ? "real ZK proof" : "MockZKVerifier"}`,
-  });
+    stepStart = Date.now();
+    executionPath = "executeDirectly";
+    tx = await walletContract.executeDirectly(
+      signature,
+      intent.nonce,
+      intent.expiry,
+      intent.calls,
+      { gasLimit: 300000 }
+    );
+
+    steps.push({
+      step: "executeDirectly",
+      status: "fallback",
+      durationMs: Date.now() - stepStart,
+      detail: "AgentWallet.executeDirectly() — signature-only fallback",
+    });
+  } else {
+    const proofResult = await proverResponse.json() as { proof: string; publicSignals: string[]; mode: string };
+    const proofBytes = proofResult.proof;
+    const proofMode = proofResult.mode;
+
+    steps.push({
+      step: "prove_intent",
+      status: "success",
+      durationMs: Date.now() - stepStart,
+      detail: `Groth16 proof generated (${proofMode} mode, ${Date.now() - stepStart}ms)`,
+    });
+
+    // ── Step 4: Execute on-chain via executeWithProof ─────────
+    stepStart = Date.now();
+
+    tx = await walletContract.executeWithProof(
+      proofBytes,
+      signature,
+      publicInputsStruct,
+      intent.calls,
+      { gasLimit: 500000 }
+    );
+
+    steps.push({
+      step: "executeWithProof",
+      status: "success",
+      durationMs: Date.now() - stepStart,
+      detail: `AgentWallet.executeWithProof() — ${proofMode === "groth16" ? "real ZK proof" : "MockZKVerifier"}`,
+    });
+  }
 
   // ── Step 5: Wait for confirmation + after-balance ─────────
   stepStart = Date.now();
   const receipt = await tx.wait();
 
   let balanceAfter = "0";
-  if (config.contracts.MockUSDC) {
+  if (config.contracts.MockUSDC && userAddress) {
     const usdc = getContract(
       config.contracts.MockUSDC,
       ERC20_BALANCE_ABI,
       provider,
       config.contractFactory
     );
-    const bal = await usdc.balanceOf(config.contracts.AgentWallet);
+    const bal = await usdc.balanceOf(userAddress);
     balanceAfter = ethers.formatUnits(bal, 6);
   }
 
@@ -670,13 +592,13 @@ async function handleExecutePayment(
     detail: `Block ${receipt.blockNumber}, gas ${receipt.gasUsed.toString()}`,
   });
 
-  const explorer = "https://sepolia.basescan.org";
+  const explorer = config.explorer || "https://sepolia.basescan.org";
   intentStore.delete(review_id);
 
   return {
     result: {
       status: "executed",
-      executionPath: proofMode === "groth16" ? "executeWithProof (real ZK)" : "executeWithProof (mock)",
+      executionPath,
       txHash: tx.hash,
       blockNumber: receipt.blockNumber,
       gasUsed: receipt.gasUsed.toString(),
@@ -711,11 +633,17 @@ async function handleGetWalletBalance(config: MCPConfig) {
       config.providerFactory
     );
 
-    const [eth] = await Promise.all([
-      provider.getBalance(config.contracts.AgentWallet),
+    // Non-custodial: show user's EOA balance (where funds are held)
+    const userAddress = config.ownerAddress || "";
+    const walletAddress = config.contracts.AgentWallet;
+
+    const [walletEth, userEth] = await Promise.all([
+      provider.getBalance(walletAddress),
+      userAddress ? provider.getBalance(userAddress) : Promise.resolve(0n),
     ]);
 
-    let usdcBal = "0";
+    let userUsdcBal = "0";
+    let walletUsdcBal = "0";
     if (config.contracts.MockUSDC) {
       const usdc = getContract(
         config.contracts.MockUSDC,
@@ -723,15 +651,24 @@ async function handleGetWalletBalance(config: MCPConfig) {
         provider,
         config.contractFactory
       );
-      const bal = await usdc.balanceOf(config.contracts.AgentWallet);
-      usdcBal = ethers.formatUnits(bal, 6);
+      const [uBal, wBal] = await Promise.all([
+        userAddress ? usdc.balanceOf(userAddress) : Promise.resolve(0n),
+        usdc.balanceOf(walletAddress),
+      ]);
+      userUsdcBal = ethers.formatUnits(uBal, 6);
+      walletUsdcBal = ethers.formatUnits(wBal, 6);
     }
 
     return {
-      wallet: config.contracts.AgentWallet,
-      eth: ethers.formatEther(eth),
-      usdc: usdcBal,
-      formatted: `AgentWallet balance:\n- ${ethers.formatEther(eth)} ETH\n- ${usdcBal} USDC`,
+      wallet: walletAddress,
+      userAddress,
+      walletEth: ethers.formatEther(walletEth),
+      userEth: userAddress ? ethers.formatEther(userEth) : "N/A",
+      userUsdc: userUsdcBal,
+      walletUsdc: walletUsdcBal,
+      formatted: userAddress
+        ? `User EOA (${userAddress.slice(0, 10)}...):\n- ${ethers.formatEther(userEth)} ETH\n- ${userUsdcBal} USDC\n\nAgentWallet (${walletAddress.slice(0, 10)}...):\n- ${ethers.formatEther(walletEth)} ETH (gas)\n- ${walletUsdcBal} USDC`
+        : `AgentWallet balance:\n- ${ethers.formatEther(walletEth)} ETH\n- ${walletUsdcBal} USDC`,
     };
   } catch (err: any) {
     return { error: `Failed to check balance: ${err.message}` };

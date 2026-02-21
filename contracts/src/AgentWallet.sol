@@ -44,6 +44,10 @@ contract AgentWallet is IAgentWallet, EIP712 {
         "DirectExecution(bytes32 nonce,uint256 expiry,bytes32 callsHash)"
     );
 
+    bytes32 private constant ZK_INTENT_TYPEHASH = keccak256(
+        "ZKIntent(bytes32 nonce,uint256 expiry,bytes32 commitment)"
+    );
+
     // ─── Constructor ────────────────────────────────────────────
 
     constructor(
@@ -98,9 +102,14 @@ contract AgentWallet is IAgentWallet, EIP712 {
             if (!proofValid) revert InvalidProof();
         }
 
-        // 2. Verify EIP-712 signature from owner
-        bytes32 intentHash = publicInputs.commitment;
-        bytes32 digest = _hashTypedDataV4(intentHash);
+        // 2. Verify EIP-712 signature from owner (ZKIntent typed struct)
+        bytes32 zkIntentHash = keccak256(abi.encode(
+            ZK_INTENT_TYPEHASH,
+            publicInputs.nonce,
+            publicInputs.expiry,
+            publicInputs.commitment
+        ));
+        bytes32 digest = _hashTypedDataV4(zkIntentHash);
         address recovered = ECDSA.recover(digest, signature);
         if (recovered != owner) revert InvalidSignature();
 
@@ -135,7 +144,7 @@ contract AgentWallet is IAgentWallet, EIP712 {
         _usedNonces[publicInputs.nonce] = true;
 
         uint256 gasUsed = gasStart - gasleft();
-        emit IntentExecuted(intentHash, owner, publicInputs.nonce, calls.length, gasUsed);
+        emit IntentExecuted(publicInputs.commitment, owner, publicInputs.nonce, calls.length, gasUsed);
     }
 
     // ─── Core: Execute Directly (No ZK Proof) ───────────────────
