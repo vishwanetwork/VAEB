@@ -1,0 +1,29 @@
+{
+  "name": "@vaeb/canton-settlement",
+  "version": "0.1.0",
+  "description": "Canton coordination layer for VAEB — privacy-preserving multi-party settlement with dual ZK proofs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "canton-zk-custody": "./src/cli.ts"
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:daml": "cd daml && daml build",
+    "dev": "tsc --watch",
+    "cli": "ts-node src/cli.ts",
+    "demo": "ts-node src/cli.ts privacy-demo",
+    "test": "node --test tests/**/*.test.ts",
+    "test:ts": "TS_NODE_PROJECT=tsconfig.test.json node --test -r ts-node/register tests/**/*.test.ts"
+  },
+  "dependencies": {
+    "ethers": "^6.13.0",
+    "@vaeb/intent-sdk": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^20.14.0",
+    "ts-node": "^10.9.2"
+  },
+  "license": "MIT"
+}

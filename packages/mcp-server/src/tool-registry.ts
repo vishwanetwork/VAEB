@@ -446,5 +446,56 @@ export function getToolDefinitions() {
         required: ["proof", "public_signals"],
       },
     },
+
+    // ─── Canton Tools (Coordination Layer) ──────────────────────
+
+    {
+      name: "canton_health",
+      description:
+        "Check if the Canton participant node is reachable. Canton is the privacy-preserving coordination layer that records multi-party settlement agreements and ZK attestations. Call this before using other Canton tools.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {},
+        required: [],
+      },
+    },
+
+    {
+      name: "query_attestations",
+      description:
+        "Query active CustodyAttestation contracts on Canton. Each attestation is a dual-signed (custodian + asset holder) record proving that an EVM balance or staking position exists, backed by a RISC0 ZK proof. Returns attestation details including chain, claim type, proof hash, and expiry.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {},
+        required: [],
+      },
+    },
+
+    {
+      name: "query_settlements",
+      description:
+        "Query pending CrossChainSettlement contracts on Canton. Each settlement defines terms agreed by buyer, seller, and custodian: token, amount, required chain, and required attestation type. Settlements are executed on EVM via VAEB after verification.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {},
+        required: [],
+      },
+    },
+
+    {
+      name: "prepare_settlement",
+      description:
+        "Prepare a Canton settlement for VAEB execution. Reads the settlement terms from Canton, finds a matching valid attestation, and returns VAEB-compatible actions for create_intent. After calling this, use create_intent with the returned vaebActions, get user signature, then execute_intent.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          settlement_id: {
+            type: "string",
+            description: "Canton contract ID of the CrossChainSettlement to execute",
+          },
+        },
+        required: ["settlement_id"],
+      },
+    },
   ];
 }

@@ -12,6 +12,7 @@ import { intentTools } from "./tools/intent-tools";
 import { trustTools } from "./tools/trust-tools";
 import { marketplaceTools } from "./tools/marketplace-tools";
 import { verifyTools } from "./tools/verify-tools";
+import { cantonTools } from "./tools/canton-tools";
 
 // ─── Config type (superset of all tool handler needs) ────────
 
@@ -55,6 +56,7 @@ const INTENT_TOOLS = ["create_intent", "execute_intent", "simulate_intent", "can
 const TRUST_TOOLS = ["discover_agents", "get_agent_reputation", "get_agent_validations", "post_feedback", "compare_agents"];
 const MARKETPLACE_TOOLS = ["search_marketplace", "hire_human", "get_wallet_balance", "execute_payment"];
 const VERIFY_TOOLS = ["check_nonce", "prove_intent", "verify_proof"];
+const CANTON_TOOLS = ["canton_health", "query_attestations", "query_settlements", "prepare_settlement"];
 
 // ─── Main routing function ───────────────────────────────────
 
@@ -81,6 +83,8 @@ export async function handleToolCall(
     intent = out.intent;
   } else if (VERIFY_TOOLS.includes(name)) {
     result = await verifyTools.handle(name, args, config);
+  } else if (CANTON_TOOLS.includes(name)) {
+    result = await cantonTools.handle(name, args, config);
   } else {
     throw new Error(`Unknown tool: ${name}`);
   }

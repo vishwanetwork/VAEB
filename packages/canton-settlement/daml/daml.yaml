@@ -1,0 +1,10 @@
+sdk-version: 2.10.3
+name: canton-zk-custody
+source: src
+version: 0.1.0
+dependencies:
+  - daml-prim
+  - daml-stdlib
+build-options:
+  - --ghc-option=-Wunused-binds
+  - --ghc-option=-Wunused-matches

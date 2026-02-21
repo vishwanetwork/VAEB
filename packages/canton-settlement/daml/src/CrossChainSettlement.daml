@@ -1,0 +1,145 @@
+-- | CrossChainSettlement — multi-party settlement with Canton privacy.
+--
+-- Privacy model:
+--   * Only buyer, seller, and custodian can see settlement details
+--   * Amount, asset, and terms are private to these three parties
+--   * External parties cannot see that a settlement exists
+--
+-- Flow: Any party proposes → all three sign → Execute with attestation → Receipt
+-- Funds never touch Canton — execution happens on EVM via VAEB AgentWallet.
+
+module CrossChainSettlement where
+
+import CustodyAttestation (ChainId(..), ClaimType(..), CustodyAttestation(..))
+
+-- | Settlement asset identifier (e.g. USDC on Base)
+data SettlementAsset = SettlementAsset
+  with
+    issuer : Text  -- ^ Token issuer (e.g. "Circle")
+    label  : Text  -- ^ Token symbol (e.g. "USDC")
+  deriving (Eq, Show)
+
+-- | Settlement proposal — initiator proposes, other two parties must agree.
+-- Only the three settlement parties can see this contract.
+template SettlementProposal
+  with
+    buyer             : Party
+    seller            : Party
+    custodian         : Party
+    requiredChain     : ChainId       -- ^ Must match attestation chain
+    requiredClaimType : ClaimType     -- ^ Must match attestation claim type
+    settlementAsset   : SettlementAsset
+    amount            : Decimal       -- ^ Amount in human-readable units
+    reference         : Text          -- ^ External reference (e.g. invoice ID)
+    proposedBy        : Party         -- ^ Who initiated
+  where
+    signatory proposedBy
+    observer buyer, seller, custodian
+
+    -- All three parties agree → create the settlement
+    choice Agree : ContractId CrossChainSettlement
+      controller buyer, seller, custodian
+      do
+        create CrossChainSettlement with ..
+
+    -- Any party can reject
+    choice RejectProposal : ()
+      controller buyer
+      do pure ()
+
+    choice RejectBySeller : ()
+      controller seller
+      do pure ()
+
+    choice RejectByCustodian : ()
+      controller custodian
+      do pure ()
+
+
+-- | CrossChainSettlement — the agreed-upon settlement terms.
+-- All three parties are signatories: buyer, seller, custodian.
+-- This ensures Canton's sub-transaction privacy: only these parties see the details.
+template CrossChainSettlement
+  with
+    buyer             : Party
+    seller            : Party
+    custodian         : Party
+    requiredChain     : ChainId
+    requiredClaimType : ClaimType
+    settlementAsset   : SettlementAsset
+    amount            : Decimal
+    reference         : Text
+    proposedBy        : Party
+  where
+    signatory buyer, seller, custodian
+
+    -- | Execute the settlement — requires a valid CustodyAttestation.
+    -- This archives the settlement and creates an ExecutionReceipt.
+    -- The actual fund transfer happens on EVM via VAEB (not on Canton).
+    choice Execute : ContractId ExecutionReceipt
+      with
+        attestationCid : ContractId CustodyAttestation
+        txHash         : Text    -- ^ EVM transaction hash from VAEB execution
+        executedAt     : Time    -- ^ When the EVM transfer was executed
+      controller custodian
+      do
+        -- Fetch the attestation to verify it matches settlement requirements
+        attestation <- fetch attestationCid
+
+        -- Verify chain and claim type match
+        assertMsg "Chain mismatch: attestation chain must match settlement"
+          (attestation.chain == requiredChain)
+        assertMsg "Claim type mismatch"
+          (attestation.claimType == requiredClaimType)
+
+        -- Verify attestation is not expired
+        now <- getTime
+        assertMsg "Attestation has expired"
+          (now < attestation.expiresAt)
+
+        -- Verify custodian matches
+        assertMsg "Attestation custodian must match settlement custodian"
+          (attestation.custodian == custodian)
+
+        -- Create the private execution receipt
+        create ExecutionReceipt with
+          buyer
+          seller
+          custodian
+          chain = requiredChain
+          asset = settlementAsset
+          amount
+          txHash
+          proofHash = attestation.proofHash  -- Links RISC0 proof
+          executedAt
+          settlementRef = reference
+
+    -- | Abort the settlement (requires all parties to agree)
+    choice Abort : ()
+      controller buyer, seller, custodian
+      do pure ()
+
+
+-- | ExecutionReceipt — immutable, private audit trail.
+-- Only the three settlement parties can see this receipt.
+-- Links both proof systems: RISC0 proofHash (off-chain) + EVM txHash (on-chain).
+template ExecutionReceipt
+  with
+    buyer         : Party
+    seller        : Party
+    custodian     : Party
+    chain         : ChainId
+    asset         : SettlementAsset
+    amount        : Decimal
+    txHash        : Text     -- ^ EVM tx hash (Groth16-verified via AgentWallet)
+    proofHash     : Text     -- ^ RISC0 proof hash (balance attestation)
+    executedAt    : Time
+    settlementRef : Text
+  where
+    signatory buyer, seller, custodian
+    -- No observers — receipt is strictly private to settlement parties
+
+    -- | Archive the receipt (cleanup after retention period)
+    choice Archive_Receipt : ()
+      controller custodian
+      do pure ()

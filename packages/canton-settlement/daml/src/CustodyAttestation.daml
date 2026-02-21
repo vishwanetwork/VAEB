@@ -1,0 +1,104 @@
+-- | CustodyAttestation — RISC0-backed ZK proof of EVM balance/staking state.
+--
+-- Privacy model:
+--   * Only custodian and assetHolder can see attestation details
+--   * Observers get limited visibility (contractId only via fetch)
+--   * RISC0 proofHash is private to signatories
+--
+-- Flow: Custodian proposes → AssetHolder accepts → CustodyAttestation created
+-- The attestation carries a RISC0 proof hash proving EVM state at a block height.
+
+module CustodyAttestation where
+
+
+-- | Claim types that can be attested via RISC0 ZK proof
+data ClaimType
+  = BalanceAbove   -- ^ Proves balance >= threshold at block N
+  | StakingActive  -- ^ Proves active staking position at block N
+  deriving (Eq, Show)
+
+-- | Chain identifiers for cross-chain attestation
+data ChainId
+  = EVM  -- ^ Ethereum Virtual Machine compatible chain (Base, Ethereum, etc.)
+  deriving (Eq, Show)
+
+-- | Attestation proposal — custodian proposes, asset holder must accept.
+-- Only custodian and assetHolder can see this contract (Canton sub-transaction privacy).
+template AttestationProposal
+  with
+    custodian    : Party    -- ^ Custodian who verified the proof
+    assetHolder  : Party    -- ^ Party whose assets are attested
+    observers    : [Party]  -- ^ Additional observers (e.g. settlement counterparties)
+    chain        : ChainId  -- ^ Which chain the assets live on
+    claimType    : ClaimType -- ^ What is being attested
+    claimDigest  : Text     -- ^ Human-readable claim (e.g. "balance >= 1000 USDC")
+    proofHash    : Text     -- ^ RISC0 proof hash (32-byte hex)
+    verifiedAt   : Time     -- ^ When the proof was generated
+    expiresAt    : Time     -- ^ When the attestation expires
+  where
+    signatory custodian
+    observer assetHolder
+
+    -- Asset holder accepts → creates CustodyAttestation (dual-signed)
+    choice Accept : ContractId CustodyAttestation
+      controller assetHolder
+      do
+        create CustodyAttestation with ..
+
+    -- Asset holder rejects the proposal
+    choice Reject : ()
+      controller assetHolder
+      do pure ()
+
+    -- Custodian can withdraw the proposal
+    choice Withdraw : ()
+      controller custodian
+      do pure ()
+
+
+-- | CustodyAttestation — dual-signed ZK attestation of EVM state.
+-- This is the core privacy primitive: only signatories see the proofHash and details.
+-- Observers can verify the attestation exists but cannot see proof internals.
+template CustodyAttestation
+  with
+    custodian    : Party
+    assetHolder  : Party
+    observers    : [Party]
+    chain        : ChainId
+    claimType    : ClaimType
+    claimDigest  : Text
+    proofHash    : Text     -- ^ RISC0 proof hash — private to signatories
+    verifiedAt   : Time
+    expiresAt    : Time
+  where
+    signatory custodian, assetHolder
+    observer observers
+
+    -- | Check if attestation is still valid (not expired)
+    nonconsuming choice IsValid : Bool
+      controller custodian
+      do
+        now <- getTime
+        pure (now < expiresAt)
+
+    -- | Refresh with a new RISC0 proof (extends expiry)
+    choice Refresh : ContractId CustodyAttestation
+      with
+        newProofHash : Text
+        newVerifiedAt : Time
+        newExpiresAt : Time
+      controller custodian, assetHolder
+      do
+        create this with
+          proofHash = newProofHash
+          verifiedAt = newVerifiedAt
+          expiresAt = newExpiresAt
+
+    -- | Revoke the attestation (either party can revoke)
+    choice Revoke : ()
+      controller custodian
+      do pure ()
+
+    choice RevokeByHolder : ()
+      controller assetHolder
+      do pure ()

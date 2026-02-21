@@ -1,0 +1,60 @@
+-- | ProofOfReserve — aggregate portfolio view for counterparties.
+--
+-- Privacy model:
+--   * Custodian creates the reserve proof for specific counterparties
+--   * Each counterparty only sees the reserve data shared with them
+--   * The underlying attestations remain private
+--
+-- This template lets a custodian prove they have sufficient reserves
+-- across multiple attestations without revealing individual positions.
+
+module ProofOfReserve where
+
+import CustodyAttestation (ChainId(..))
+
+-- | Reserve entry — summary of a single attested position
+data ReserveEntry = ReserveEntry
+  with
+    chain       : ChainId
+    asset       : Text      -- ^ e.g. "USDC"
+    totalAmount : Decimal   -- ^ Aggregate amount across attested positions
+    proofCount  : Int       -- ^ Number of underlying attestations
+  deriving (Eq, Show)
+
+-- | ProofOfReserve — aggregate view visible to selected counterparties.
+-- Individual attestation details (proofHash, assetHolder) are NOT exposed.
+template ProofOfReserve
+  with
+    custodian      : Party
+    counterparties : [Party]    -- ^ Parties who can view this reserve proof
+    entries        : [ReserveEntry]
+    generatedAt    : Time
+    validUntil     : Time
+  where
+    signatory custodian
+    observer counterparties
+
+    -- | Check if the reserve proof is still valid
+    nonconsuming choice IsReserveValid : Bool
+      controller custodian
+      do
+        now <- getTime
+        pure (now < validUntil)
+
+    -- | Update the reserve proof with new data
+    choice UpdateReserve : ContractId ProofOfReserve
+      with
+        newEntries    : [ReserveEntry]
+        newValidUntil : Time
+      controller custodian
+      do
+        now <- getTime
+        create this with
+          entries = newEntries
+          generatedAt = now
+          validUntil = newValidUntil
+
+    -- | Revoke the reserve proof
+    choice RevokeReserve : ()
+      controller custodian
+      do pure ()
