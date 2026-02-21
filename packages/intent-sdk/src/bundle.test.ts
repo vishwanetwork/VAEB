@@ -175,7 +175,7 @@ describe("Intent SDK", () => {
   // ─── Calldata Derivation ────────────────────────────────────
 
   describe("deriveCalldata", () => {
-    it("should derive transfer calldata", () => {
+    it("should derive transfer calldata", async () => {
       const bundle: IntentBundle = {
         version: "1.0",
         chainId: 84532,
@@ -192,16 +192,16 @@ describe("Intent SDK", () => {
         ],
       };
 
-      const derived = deriveCalldata(bundle, "base_sepolia");
+      const derived = await deriveCalldata(bundle, "base_sepolia");
       expect(derived.calls).toHaveLength(1);
       expect(derived.calls[0].target).toBe(
         "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
       );
       expect(derived.calls[0].data).toContain("0xa9059cbb"); // transfer selector
-      expect(derived.multicallDataHash).toMatch(/^0x[0-9a-f]{64}$/);
+      expect(typeof derived.multicallDataHash).toBe("bigint");
     });
 
-    it("should derive swap calldata with approve + swap", () => {
+    it("should derive swap calldata with approve + swap", async () => {
       const bundle: IntentBundle = {
         version: "1.0",
         chainId: 84532,
@@ -218,7 +218,7 @@ describe("Intent SDK", () => {
         ],
       };
 
-      const derived = deriveCalldata(bundle, "base_sepolia");
+      const derived = await deriveCalldata(bundle, "base_sepolia");
       // Should have 2 calls: approve + swap
       expect(derived.calls.length).toBe(2);
       // First call is approve
