@@ -25,56 +25,63 @@ import {
 } from "@vaeb/intent-sdk";
 import { ContractFactory, ProviderFactory, getContract, getProvider } from "./deps";
 
-// ─── EIP-712 type hashes (must match AgentWallet.sol exactly) ────────────────
+// poseidon hashing
+let _poseidonFn: any = null;
+let F: any = null;
 
-const ACTION_ENTRY_TYPEHASH = ethers.keccak256(
-  ethers.toUtf8Bytes("ActionEntry(string actionType,address token,address to,uint256 amount)")
-);
+async function initPoseidon() {
+  if (_poseidonFn) return;
+  const circomlibjs = await import("circomlibjs");
+  _poseidonFn = await circomlibjs.buildPoseidon();
+  F = _poseidonFn.F;
+}
 
-const INTENT_BUNDLE_TYPEHASH = ethers.keccak256(
-  ethers.toUtf8Bytes(
-    "IntentBundle(string version,uint256 chainId,bytes32 nonce,uint256 expiry,address payer,ActionEntry[] actions)ActionEntry(string actionType,address token,address to,uint256 amount)"
-  )
-);
+function poseidonHash(inputs: bigint[]): bigint {
+  return F.toObject(_poseidonFn(inputs));
+}
 
-/**
- * Compute the EIP-712 struct hash for an IntentBundle.
- * This matches what signIntentBundle() signs, and what the contract's
- * executeWithProof() expects: recover(_hashTypedDataV4(commitment), sig) == owner
- */
-function computeEIP712StructHash(bundle: IntentBundle): string {
-  const actionHashes = bundle.actions.map((action) =>
-    ethers.keccak256(
-      ethers.AbiCoder.defaultAbiCoder().encode(
-        ["bytes32", "bytes32", "address", "address", "uint256"],
-        [
-          ACTION_ENTRY_TYPEHASH,
-          ethers.keccak256(ethers.toUtf8Bytes(action.actionType)),
-          action.token,
-          action.to,
-          action.amount,
-        ]
-      )
-    )
-  );
+// compute poseidon commitment for IntentBundle
+async function computePoseidonCommitment(bundle: IntentBundle): Promise<bigint> {
+  await initPoseidon();
+  const actionTypeMap: Record<string, number> = {
+    TRANSFER: 1,
+    SWAP: 2,
+    STAKE: 3,
+    UNSTAKE: 4,
+  };
 
-  // EIP-712 array of structs: keccak256(concat of element struct hashes)
-  const actionsArrayHash = ethers.keccak256(ethers.concat(actionHashes));
+  // Poseidon(version, chainId, nonce, expiry, payer, numActions)
+  const bundleHash = poseidonHash([
+    1n,
+    BigInt(bundle.chainId),
+    BigInt(bundle.nonce),
+    BigInt(bundle.expiry),
+    BigInt(bundle.payer),
+    BigInt(bundle.actions.length),
+  ]);
 
-  return ethers.keccak256(
-    ethers.AbiCoder.defaultAbiCoder().encode(
-      ["bytes32", "bytes32", "uint256", "bytes32", "uint256", "address", "bytes32"],
-      [
-        INTENT_BUNDLE_TYPEHASH,
-        ethers.keccak256(ethers.toUtf8Bytes(bundle.version)),
-        bundle.chainId,
-        bundle.nonce,
-        bundle.expiry,
-        bundle.payer,
-        actionsArrayHash,
-      ]
-    )
-  );
+  // hash each action
+  const actionHashes: bigint[] = [];
+  for (let i = 0; i < 4; i++) {
+    if (i < bundle.actions.length) {
+      const action = bundle.actions[i];
+      const typeNum = actionTypeMap[action.actionType] || 0;
+      const actionHash = poseidonHash([
+        BigInt(typeNum),
+        BigInt(action.token),
+        BigInt(action.to),
+        BigInt(action.amount),
+      ]);
+      actionHashes.push(actionHash);
+    } else {
+      // unused slots: Poseidon(0, 0, 0, 0)
+      const zeroHash = poseidonHash([0n, 0n, 0n, 0n]);
+      actionHashes.push(zeroHash);
+    }
+  }
+
+  // Poseidon(bundleHash, actionHash[0], actionHash[1], actionHash[2], actionHash[3])
+  return poseidonHash([bundleHash, ...actionHashes]);
 }
 
 type Config = {
@@ -175,7 +182,7 @@ async function createIntent(args: any, config: Config) {
   });
 
   // Derive the calldata
-  const derived = deriveCalldata(bundle, chainKey);
+  const derived = await deriveCalldata(bundle, chainKey);
 
   // Compute intent ID
   const intentId = computeIntentId(bundle);
@@ -252,8 +259,7 @@ async function executeIntent(args: any, config: Config) {
     const x402Fee = DEFAULTS.SERVICE_FEE_USDC;
 
     // Step 3: Generate ZK proof
-    // commitment = EIP-712 IntentBundle struct hash (matches what signIntentBundle signed)
-    const commitment = computeEIP712StructHash(stored.bundle);
+    const commitment = await computePoseidonCommitment(stored.bundle);
     const proofResult: any = await generateProof(
       stored.bundle,
       stored.derivedCalldata,
@@ -341,7 +347,7 @@ async function cancelIntent(args: any, _config: Config) {
 async function generateProof(
   bundle: IntentBundle,
   derivedCalldata: DerivedCalldata,
-  commitment: string,
+  commitment: bigint,
   config: Config
 ) {
   const fetchFn = config.fetchFn || fetch;
@@ -371,10 +377,10 @@ async function generateProof(
       },
       derivedCalldata: { calls: proverCalls },
       publicInputs: {
-        commitment,
+        commitment: commitment.toString(), // Prover expects decimal string
         chainId: bundle.chainId,
         signerAddress,
-        multicallDataHash: derivedCalldata.multicallDataHash,
+        multicallDataHash: BigInt(derivedCalldata.multicallDataHash).toString(),
         nonce: bundle.nonce,
         expiry: bundle.expiry,
       },
@@ -401,7 +407,7 @@ const AGENT_WALLET_ABI = [
 async function submitToChain(
   bundle: IntentBundle,
   derivedCalldata: DerivedCalldata,
-  commitment: string,
+  commitment: bigint,
   proofResult: any,
   signature: string,
   chainKey: string,
@@ -424,10 +430,10 @@ async function submitToChain(
   );
 
   const publicInputs = {
-    commitment,
+    commitment: "0x" + commitment.toString(16).padStart(64, "0"),
     chainId: bundle.chainId,
     signerAddress: config.ownerAddress || bundle.payer,
-    multicallDataHash: derivedCalldata.multicallDataHash,
+    multicallDataHash: "0x" + BigInt(derivedCalldata.multicallDataHash).toString(16).padStart(64, "0"),
     nonce: bundle.nonce,
     expiry: bundle.expiry,
   };

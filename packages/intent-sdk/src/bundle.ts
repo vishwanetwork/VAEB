@@ -332,10 +332,10 @@ export function bundleFromJSON(json: any): IntentBundle {
  * Derive the actual on-chain calldata from an IntentBundle.
  * This converts high-level intents into concrete EVM calls.
  */
-export function deriveCalldata(
+export async function deriveCalldata(
   bundle: IntentBundle,
   chainKey: string
-): DerivedCalldata {
+): Promise<DerivedCalldata> {
   const chainConfig = CHAINS[chainKey];
   if (!chainConfig) throw new Error(`Unknown chain: ${chainKey}`);
 
@@ -366,7 +366,7 @@ export function deriveCalldata(
   }
 
   const intentId = computeIntentId(bundle);
-  const multicallDataHash = computeMulticallHash(calls);
+  const multicallDataHash = await computeMulticallHash(calls, bundle);
 
   return {
     intentId,
@@ -454,13 +454,48 @@ function deriveApproveCall(action: ActionEntry): DerivedCall {
   };
 }
 
-function computeMulticallHash(calls: DerivedCall[]): string {
-  const abiCoder = ethers.AbiCoder.defaultAbiCoder();
-  const encoded = abiCoder.encode(
-    ["tuple(address target, uint256 value, bytes data)[]"],
-    [calls.map((c) => ({ target: c.target, value: c.value, data: c.data }))]
-  );
-  return ethers.keccak256(encoded);
+// compute multicallDataHash using Poseidon
+async function computeMulticallHash(calls: DerivedCall[], bundle: IntentBundle): Promise<bigint> {
+  const circomlibjs = await import("circomlibjs");
+  const poseidon = await circomlibjs.buildPoseidon();
+  const F = poseidon.F;
+
+  const poseidonHash = (inputs: bigint[]): bigint => {
+    return F.toObject(poseidon(inputs));
+  };
+
+  const MAX_CALLS = 8; // MAX_ACTIONS * 2
+  const paddingCallHash = poseidonHash([0n, 0n, 0n]);
+  const singleCallHashes: bigint[] = [];
+
+  for (let i = 0; i < MAX_CALLS; i++) {
+    if (i < calls.length) {
+      const call = calls[i];
+      // for the value field: use action.amount if this call is an action,
+      // otherwise use the call's actual value (ex. SWAP)
+      const actionIndex = i < bundle.actions.length ? i : -1;
+      const valueForHash = actionIndex >= 0
+        ? BigInt(bundle.actions[actionIndex].amount)
+        : BigInt(call.value);
+
+      // Poseidon(target, value, keccak256(data))
+      const dataHash = BigInt(ethers.keccak256(call.data));
+      const callHash = poseidonHash([
+        BigInt(call.target),
+        valueForHash,
+        dataHash,
+      ]);
+      singleCallHashes.push(callHash);
+    } else {
+      singleCallHashes.push(paddingCallHash);
+    }
+  }
+
+  // Final multicall hash: Poseidon(singleCallHash[0], ..., singleCallHash[7])
+  const multicallHash = poseidonHash(singleCallHashes);
+
+  // Return raw bigint (caller decides format: .toString() for prover, toHex() for contract)
+  return multicallHash;
 }
 
 // ─── Human-Readable Intent Description ──────────────────────────

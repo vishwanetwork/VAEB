@@ -55,7 +55,7 @@ export interface DerivedCalldata {
   intentId: string;        // keccak256(serialized IntentBundle)
   chainId: number;
   calls: DerivedCall[];
-  multicallDataHash: string; // keccak256(abi.encode(calls))
+  multicallDataHash: bigint; // Poseidon hash of derived calls
 }
 
 // ─── Intent Creation Params (high-level API) ────────────────────

@@ -340,7 +340,13 @@ async function handleHireHuman(
     "function transfer(address to, uint256 amount) returns (bool)",
   ]);
   const amountInBaseUnits = ethers.parseUnits(args.amount.toString(), 6);
-  const usdcAddress = config.contracts?.MockUSDC || deriveCalldata(bundle, intentResult.chain).calls[0]?.target;
+
+  // Get USDC address from config or derive it
+  let usdcAddress = config.contracts?.MockUSDC;
+  if (!usdcAddress) {
+    const derived = await deriveCalldata(bundle, intentResult.chain);
+    usdcAddress = derived.calls[0]?.target;
+  }
 
   const calls = [{
     target: usdcAddress,
