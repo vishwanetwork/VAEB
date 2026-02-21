@@ -366,7 +366,7 @@ export async function deriveCalldata(
   }
 
   const intentId = computeIntentId(bundle);
-  const multicallDataHash = await computeMulticallHash(calls);
+  const multicallDataHash = await computeMulticallHash(calls, bundle);
 
   return {
     intentId,
@@ -455,7 +455,7 @@ function deriveApproveCall(action: ActionEntry): DerivedCall {
 }
 
 // compute multicallDataHash using Poseidon
-async function computeMulticallHash(calls: DerivedCall[]): Promise<bigint> {
+async function computeMulticallHash(calls: DerivedCall[], bundle: IntentBundle): Promise<bigint> {
   const circomlibjs = await import("circomlibjs");
   const poseidon = await circomlibjs.buildPoseidon();
   const F = poseidon.F;
@@ -471,11 +471,18 @@ async function computeMulticallHash(calls: DerivedCall[]): Promise<bigint> {
   for (let i = 0; i < MAX_CALLS; i++) {
     if (i < calls.length) {
       const call = calls[i];
+      // for the value field: use action.amount if this call is an action,
+      // otherwise use the call's actual value (ex. SWAP)
+      const actionIndex = i < bundle.actions.length ? i : -1;
+      const valueForHash = actionIndex >= 0
+        ? BigInt(bundle.actions[actionIndex].amount)
+        : BigInt(call.value);
+
       // Poseidon(target, value, keccak256(data))
       const dataHash = BigInt(ethers.keccak256(call.data));
       const callHash = poseidonHash([
         BigInt(call.target),
-        BigInt(call.value),
+        valueForHash,
         dataHash,
       ]);
       singleCallHashes.push(callHash);
