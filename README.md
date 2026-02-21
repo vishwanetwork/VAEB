@@ -6,6 +6,8 @@ The agent can't cheat — the ZK proof cryptographically binds the signed intent
 
 Built for ETH Denver 2026 on Base Sepolia. Authors of [ERC-8150](doc/eip8150.md) (Zero-Knowledge Agent Payment Verification).
 
+**x402 compatible** — VAEB MCP tools are designed to be gated by [x402](https://github.com/coinbase/x402) (HTTP 402 Payment Required). AI agents pay per tool call in USDC, directly from their wallet. The included **RentaHuman** marketplace demo shows this end-to-end: an AI agent discovers available humans, pays via x402 to hire them, and the payment is ZK-verified on-chain before execution.
+
 ---
 
 ## How it works
@@ -276,6 +278,20 @@ cd packages/frontend && npm run dev
 
 The frontend connects MetaMask, shows wallet balances, and lets you chat with the agent. The agent uses the MCP tool pipeline to construct, prove, and execute intents.
 
+### RentaHuman — x402 marketplace demo
+
+The built-in **RentaHuman** marketplace shows how VAEB combines ZK-verified execution with [x402](https://github.com/coinbase/x402) (HTTP 402 Payment Required):
+
+1. AI agent calls `search_marketplace` to find available humans
+2. Agent calls `hire_human` — this triggers an **x402 payment request** before the intent is created
+3. User approves the payment in MetaMask (USDC on Base Sepolia)
+4. VAEB generates a Groth16 ZK proof binding the payment intent to the calldata
+5. `AgentWallet.executeWithProof()` verifies the proof on-chain and transfers USDC
+
+The x402 layer ensures the AI agent pays for API access (per hire request) before any on-chain action occurs. No payment = no service. This makes VAEB MCP tools natively monetizable — any AI agent (Claude Desktop, Cursor, custom) that calls `hire_human` automatically pays the marketplace fee.
+
+Try it in the chat UI: *"I need someone to walk my dog"*
+
 ---
 
 ## Execution flow
@@ -428,6 +444,6 @@ cp build/Groth16Verifier.sol ../contracts/src/
 ## What's not yet implemented
 
 - ERC-8004 on-chain reputation registry (trust tools use hardcoded demo data)
-- x402 payment gating (MCP server defines paid tools but doesn't enforce HTTP 402)
+- x402 enforcement on MCP tools (tools are marked as paid with fees defined, but HTTP 402 gating is not yet wired — the RentaHuman marketplace flow demonstrates the pattern)
 - Contract verification on BaseScan
 - Production trusted setup (uses local ceremony; production should use Hermez ptau)

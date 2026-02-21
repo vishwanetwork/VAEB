@@ -74,6 +74,22 @@ export const CHAINS: Record<string, ChainConfig> = {
       uniswap_v3: "0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E",
     },
   },
+  kite_testnet: {
+    chainId: 2368,
+    name: "Kite AI Testnet",
+    rpcUrl: "https://rpc-testnet.gokite.ai",
+    blockExplorer: "https://testnet.kitescan.ai",
+    nativeCurrency: "KITE",
+    isEVM: true,
+    avgGasCost: "$0.0001",
+    avgFinality: "~1s",
+    tokens: {
+      // MockUSDC deployed by deploy-kite.js — updated in deployments.json after deploy
+      USDC: "",
+      ETH: "0x0000000000000000000000000000000000000000",
+    },
+    dexRouters: {},
+  },
 };
 
 // ─── ERC-8004 Deployed Contract Addresses ───────────────────────

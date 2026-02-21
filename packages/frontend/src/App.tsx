@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { ethers } from 'ethers';
-import { CONFIG } from './config';
+import { CHAIN_CONFIGS, DEFAULT_CHAIN } from './config';
 import { fetchBalances, sendChatMessage, executeChatIntent, ChatResponse, ExecuteResponse, ToolCallInfo } from './api';
 
 // ── Types ─────────────────────────────────────────────────────
@@ -58,6 +58,10 @@ const EXEC_STEPS = [
 // ── App ───────────────────────────────────────────────────────
 
 export default function App() {
+  // Chain
+  const [selectedChainKey, setSelectedChainKey] = useState(DEFAULT_CHAIN);
+  const activeChain = CHAIN_CONFIGS[selectedChainKey];
+
   // Wallet
   const [address, setAddress] = useState<string | null>(null);
   const [signer, setSigner] = useState<ethers.JsonRpcSigner | null>(null);
@@ -103,7 +107,7 @@ export default function App() {
     setShowSuggestions(false);
 
     try {
-      const response = await sendChatMessage(msg, address, sessionId);
+      const response = await sendChatMessage(msg, address, sessionId, selectedChainKey);
       setSessionId(response.sessionId);
 
       const assistantMsg: ChatMessage = {
@@ -130,6 +134,30 @@ export default function App() {
 
   // ── Connect Wallet ────────────────────────────────────────
 
+  const handleChainChange = useCallback(async (chainKey: string) => {
+    const chain = CHAIN_CONFIGS[chainKey];
+    if (!chain) return;
+    setSelectedChainKey(chainKey);
+    const mm = getMetaMask();
+    if (!mm || !connected) return;
+    try {
+      await mm.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: chain.chainIdHex }] });
+    } catch (e: any) {
+      if (e.code === 4902) {
+        await mm.request({
+          method: 'wallet_addEthereumChain',
+          params: [{
+            chainId: chain.chainIdHex,
+            chainName: chain.chainName,
+            rpcUrls: [chain.rpcUrl],
+            blockExplorerUrls: [chain.explorer],
+            nativeCurrency: chain.nativeCurrency,
+          }],
+        });
+      }
+    }
+  }, [connected]);
+
   const connectWallet = useCallback(async () => {
     setConnectError(null);
     const mm = getMetaMask();
@@ -142,22 +170,22 @@ export default function App() {
       await mm.request({ method: 'eth_requestAccounts' });
 
       const chainId = await mm.request({ method: 'eth_chainId' });
-      if (chainId !== CONFIG.chainIdHex) {
+      if (chainId !== activeChain.chainIdHex) {
         try {
           await mm.request({
             method: 'wallet_switchEthereumChain',
-            params: [{ chainId: CONFIG.chainIdHex }],
+            params: [{ chainId: activeChain.chainIdHex }],
           });
         } catch (switchError: any) {
           if (switchError.code === 4902) {
             await mm.request({
               method: 'wallet_addEthereumChain',
               params: [{
-                chainId: CONFIG.chainIdHex,
-                chainName: CONFIG.chainName,
-                rpcUrls: [CONFIG.rpcUrl],
-                blockExplorerUrls: [CONFIG.explorer],
-                nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
+                chainId: activeChain.chainIdHex,
+                chainName: activeChain.chainName,
+                rpcUrls: [activeChain.rpcUrl],
+                blockExplorerUrls: [activeChain.explorer],
+                nativeCurrency: activeChain.nativeCurrency,
               }],
             });
           } else {
@@ -193,7 +221,7 @@ export default function App() {
       console.error('Connection failed:', err);
       setConnectError(err?.message || 'Connection failed. Check console for details.');
     }
-  }, []);
+  }, [activeChain]);
 
   // ── Handle suggestion click ────────────────────────────────
 
@@ -233,7 +261,7 @@ export default function App() {
         m.id === msgId ? { ...m, execStep: 1 } : m
       ));
 
-      const result = await executeChatIntent(intent.reviewId, signature);
+      const result = await executeChatIntent(intent.reviewId, signature, selectedChainKey);
 
       // Step 4: Done — attach result + MCP tool calls from execution
       setMessages(prev => prev.map(m =>
@@ -296,7 +324,26 @@ export default function App() {
           <div className="header-right">
             <div className="network-badge">
               <span className={`network-dot${connected ? ' live' : ''}`} />
-              Base Sepolia
+              <select
+                value={selectedChainKey}
+                onChange={e => handleChainChange(e.target.value)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'inherit',
+                  font: 'inherit',
+                  fontSize: '11px',
+                  cursor: 'pointer',
+                  outline: 'none',
+                  padding: 0,
+                }}
+              >
+                {Object.values(CHAIN_CONFIGS).map(chain => (
+                  <option key={chain.key} value={chain.key} style={{ background: '#0a0a0a' }}>
+                    {chain.chainName}
+                  </option>
+                ))}
+              </select>
             </div>
             {connected && balances && (
               <div className="balance-pill">
@@ -614,7 +661,7 @@ export default function App() {
       <footer className="footer">
         <span className="footer-text">Verified Agent Execution Bundle</span>
         <div className="footer-links">
-          <a href="https://sepolia.basescan.org" target="_blank" rel="noopener noreferrer">BaseScan</a>
+          <a href={activeChain.explorer} target="_blank" rel="noopener noreferrer">Explorer</a>
           <a href="https://github.com/vishwanetwork/VAEB" target="_blank" rel="noopener noreferrer">GitHub</a>
         </div>
       </footer>

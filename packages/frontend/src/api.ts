@@ -82,12 +82,13 @@ async function safeJson(res: globalThis.Response) {
 export async function sendChatMessage(
   message: string,
   walletAddress: string,
-  sessionId?: string
+  sessionId?: string,
+  chain?: string
 ): Promise<ChatResponse> {
   const res = await fetch(`${CONFIG.apiUrl}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, walletAddress, sessionId }),
+    body: JSON.stringify({ message, walletAddress, sessionId, chain }),
   });
   const data = await safeJson(res);
   if (!res.ok) {
@@ -98,12 +99,13 @@ export async function sendChatMessage(
 
 export async function executeChatIntent(
   reviewId: string,
-  signature: string
+  signature: string,
+  chain?: string
 ): Promise<ExecuteResponse> {
   const res = await fetch(`${CONFIG.apiUrl}/chat/execute`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reviewId, signature }),
+    body: JSON.stringify({ reviewId, signature, chain }),
   });
   const data = await safeJson(res);
   if (!res.ok) {

@@ -9,13 +9,14 @@
       "MockUSDC": "0x93560481FE085E4Fd1A0f0bAb2E625118A67aC1D",
       "MockZKVerifier": "0x83E59e879E1Ccf7bAd76FE9aeedBC1e5e3B50AcD",
       "Groth16Verifier": "0xB533793f4813822CFb326b75b8D459d8A9faCF4F",
-      "Groth16VerifierAdapter": "0x4FD7cb52eE367B9eC7Ec84d862B28C2230CCdaEE"
+      "Groth16VerifierAdapter": "0x4FD7cb52eE367B9eC7Ec84d862B28C2230CCdaEE",
+      "MockUSDT": "0x8586620CA6b1C436f5f885Eb8B77764eaF0d8C34"
     },
     "wallets": {
       "owner": "0x77A93ecD2437DA60aAFDBF595e74e0317b0d0B47",
       "agent": "0x17C3771F0250b2774AA11b793Deb523d2D914E03"
     },
-    "timestamp": "2026-02-20T22:24:46.599Z"
+    "timestamp": "2026-02-21T00:49:50.955Z"
   },
   "base": {
     "chainId": 8453,
@@ -30,5 +31,15 @@
     "blockExplorer": "https://sepolia.etherscan.io",
     "contracts": {},
     "wallets": {}
+  },
+  "kite_testnet": {
+    "chainId": 2368,
+    "rpcUrl": "https://rpc-testnet.gokite.ai",
+    "blockExplorer": "https://testnet.kitescan.ai",
+    "contracts": {},
+    "wallets": {
+      "owner": "0x77A93ecD2437DA60aAFDBF595e74e0317b0d0B47",
+      "agent": "0x17C3771F0250b2774AA11b793Deb523d2D914E03"
+    }
   }
 }
