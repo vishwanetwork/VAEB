@@ -12,6 +12,8 @@ Built for ETH Denver 2026 and the [0G DeFAI Hackathon](https://0g.ai). Deployed 
 
 **x402 compatible** — VAEB MCP tools are designed to be gated by [x402](https://github.com/coinbase/x402) (HTTP 402 Payment Required). AI agents pay per tool call in USDC, directly from their wallet. The included **RentaHuman** marketplace demo shows this end-to-end: an AI agent discovers available humans, pays via x402 to hire them, and the payment is ZK-verified on-chain before execution.
 
+**Demo:** [Watch the video walkthrough](https://www.loom.com/share/ea4f850623ab4fcca0e1fb8085c7348f)
+
 ---
 
 ## How it works
