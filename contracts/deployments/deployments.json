@@ -1,22 +1,19 @@
 {
   "base_sepolia": {
     "chainId": 84532,
-    "rpcUrl": "https://sepolia.base.org",
+    "rpcUrl": "https://base-sepolia.infura.io/v3/1be13a4d19414b35b8091e68f0405a3f",
     "blockExplorer": "https://sepolia.basescan.org",
     "contracts": {
-      "AgentWallet": "0x99D238c22499e679e9d45578245083FE690C8B5f",
-      "AgentWalletFactory": "0x9A92E10B3F62910254923CBfF59C3b1B4FFAcB41",
-      "MockUSDC": "0x93560481FE085E4Fd1A0f0bAb2E625118A67aC1D",
-      "MockZKVerifier": "0x83E59e879E1Ccf7bAd76FE9aeedBC1e5e3B50AcD",
-      "Groth16Verifier": "0xB533793f4813822CFb326b75b8D459d8A9faCF4F",
-      "Groth16VerifierAdapter": "0x4FD7cb52eE367B9eC7Ec84d862B28C2230CCdaEE",
-      "MockUSDT": "0x8586620CA6b1C436f5f885Eb8B77764eaF0d8C34"
+      "AgentWallet": "0x24E2942e8E218a6d635d4bFfeE5A79c7aeC11928",
+      "MockUSDC": "0x43bbC154FCae9F149a9DE92C06548c33e4666788",
+      "Groth16Verifier": "0xea5b3d244261402Cc497C7b2cC8DEf978982A105",
+      "Groth16VerifierAdapter": "0xc06C93E952e252fB6a7D124ba8Aa88A9779F06cc"
     },
     "wallets": {
       "owner": "0x77A93ecD2437DA60aAFDBF595e74e0317b0d0B47",
       "agent": "0x17C3771F0250b2774AA11b793Deb523d2D914E03"
     },
-    "timestamp": "2026-02-21T00:49:50.955Z"
+    "timestamp": "2026-02-21T08:15:44.082Z"
   },
   "base": {
     "chainId": 8453,

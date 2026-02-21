@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { ethers } from 'ethers';
 import { CHAIN_CONFIGS, DEFAULT_CHAIN } from './config';
-import { fetchBalances, sendChatMessage, executeChatIntent, ChatResponse, ExecuteResponse, ToolCallInfo } from './api';
+import { fetchBalances, fetchTools, sendChatMessage, executeChatIntent, ChatResponse, ExecuteResponse, ToolCallInfo, ToolDef } from './api';
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -52,6 +52,7 @@ function getMetaMask(): any {
 
 const ERC20_ABI = [
   'function approve(address spender, uint256 amount) returns (bool)',
+  'function allowance(address owner, address spender) view returns (uint256)',
 ];
 
 const EXEC_STEPS = [
@@ -84,6 +85,11 @@ export default function App() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [showSuggestions, setShowSuggestions] = useState(false);
+
+  // Tools
+  const [toolDefs, setToolDefs] = useState<ToolDef[]>([]);
+  const [toolsProvider, setToolsProvider] = useState('');
+  const [showTools, setShowTools] = useState(false);
 
   // Auto-scroll
   useEffect(() => {
@@ -215,10 +221,13 @@ export default function App() {
       }]);
       setShowSuggestions(true);
 
-      // Load balances non-blocking
+      // Load balances and tools non-blocking
       fetchBalances(addr, activeChain.key)
         .then(bals => setBalances(bals))
         .catch(err => console.error('Balance fetch failed:', err));
+      fetchTools()
+        .then(res => { setToolDefs(res.tools); setToolsProvider(res.provider); })
+        .catch(err => console.error('Tools fetch failed:', err));
 
       mm.on('accountsChanged', () => location.reload());
       mm.on('chainChanged', () => location.reload());
@@ -258,11 +267,14 @@ export default function App() {
     ));
 
     try {
-      // Approve AgentWallet to transferFrom user's USDC
+      // Approve AgentWallet to transferFrom user's USDC (skip if allowance already sufficient)
       if (intent.approvalToken && intent.approvalTarget && intent.approvalAmount) {
         const erc20 = new ethers.Contract(intent.approvalToken, ERC20_ABI, signer);
-        const approveTx = await erc20.approve(intent.approvalTarget, intent.approvalAmount);
-        await approveTx.wait();
+        const currentAllowance = await erc20.allowance(await signer.getAddress(), intent.approvalTarget);
+        if (currentAllowance < BigInt(intent.approvalAmount)) {
+          const approveTx = await erc20.approve(intent.approvalTarget, intent.approvalAmount, { gasLimit: 60000n });
+          await approveTx.wait();
+        }
       }
 
       // Step 1: EIP-712 Signature (ZKIntent: nonce, expiry, commitment)
@@ -362,6 +374,15 @@ export default function App() {
                 ))}
               </select>
             </div>
+            {connected && toolDefs.length > 0 && (
+              <button
+                className="tools-toggle"
+                onClick={() => setShowTools(v => !v)}
+                title="View MCP Tools"
+              >
+                {showTools ? 'Hide Tools' : `Tools (${toolDefs.length})`}
+              </button>
+            )}
             {connected && balances && (
               <div className="balance-pill">
                 <span className="balance-pill-val">{balances.user.usdc}</span>
@@ -392,6 +413,33 @@ export default function App() {
             </p>
           )}
         </section>
+      )}
+
+      {/* Tools Panel */}
+      {showTools && toolDefs.length > 0 && (
+        <div className="tools-panel fade-in">
+          <div className="tools-panel-header">
+            <span className="tools-panel-title">MCP Tools</span>
+            <span className="tools-panel-provider">{toolsProvider}</span>
+          </div>
+          <div className="tools-panel-list">
+            {toolDefs.map(t => (
+              <div key={t.name} className="tools-panel-item">
+                <div className="tools-panel-name">{t.name}</div>
+                <div className="tools-panel-desc">{t.description}</div>
+                {t.parameters.length > 0 && (
+                  <div className="tools-panel-params">
+                    {t.parameters.map(p => (
+                      <span key={p.name} className="tools-panel-param">
+                        {p.name}{p.required ? '*' : ''}: <em>{p.type}</em>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
       {/* Chat */}

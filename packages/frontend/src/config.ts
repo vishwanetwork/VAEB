@@ -22,8 +22,8 @@ export const CHAIN_CONFIGS: Record<string, ChainConfig> = {
     explorer: 'https://sepolia.basescan.org',
     nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
     contracts: {
-      AgentWallet: '0x6Ed542D19aeE41F50a31F2e84db3bB25e0B85C77',
-      MockUSDC: '0xbff8F4E34c275ba115FCaeAF6EC515649f93ceA8',
+      AgentWallet: '0x24E2942e8E218a6d635d4bFfeE5A79c7aeC11928',
+      MockUSDC: '0x43bbC154FCae9F149a9DE92C06548c33e4666788',
     },
   },
   kite_testnet: {
@@ -42,7 +42,7 @@ export const CHAIN_CONFIGS: Record<string, ChainConfig> = {
   },
 };
 
-export const DEFAULT_CHAIN = 'base_sepolia';
+export const DEFAULT_CHAIN = 'kite_testnet';
 
 // Static config (non-chain-specific)
 export const CONFIG = {

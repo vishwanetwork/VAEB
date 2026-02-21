@@ -6,6 +6,32 @@ export async function fetchBalances(address: string, chain?: string) {
   return res.json();
 }
 
+// Tool definitions
+
+export interface ToolParam {
+  name: string;
+  type: string;
+  description: string;
+  required: boolean;
+}
+
+export interface ToolDef {
+  name: string;
+  description: string;
+  parameters: ToolParam[];
+}
+
+export interface ToolsResponse {
+  tools: ToolDef[];
+  provider: string;
+  count: number;
+}
+
+export async function fetchTools(): Promise<ToolsResponse> {
+  const res = await fetch(`${CONFIG.apiUrl}/tools`);
+  return res.json();
+}
+
 // Chat API
 
 export interface ToolCallInfo {

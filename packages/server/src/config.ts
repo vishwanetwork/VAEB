@@ -27,9 +27,9 @@ export const CHAIN_CONFIGS: Record<string, ChainConfig> = {
     rpcUrl: process.env.BASE_SEPOLIA_RPC_URL || 'https://sepolia.base.org',
     explorer: 'https://sepolia.basescan.org',
     contracts: {
-      AgentWallet: process.env.AGENT_WALLET_ADDRESS || '0x6Ed542D19aeE41F50a31F2e84db3bB25e0B85C77',
-      MockUSDC: '0xbff8F4E34c275ba115FCaeAF6EC515649f93ceA8',
-      Verifier: '0x53d8DcaCc2cEC2293d33F9B4460c77233a41d058',
+      AgentWallet: process.env.AGENT_WALLET_ADDRESS || '0x24E2942e8E218a6d635d4bFfeE5A79c7aeC11928',
+      MockUSDC: '0x43bbC154FCae9F149a9DE92C06548c33e4666788',
+      Verifier: '0xc06C93E952e252fB6a7D124ba8Aa88A9779F06cc',
     },
   },
   kite_testnet: {

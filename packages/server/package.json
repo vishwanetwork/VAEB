@@ -10,6 +10,7 @@
     "dev": "nodemon --watch src --watch ../mcp-server/dist --ext ts,js --exec ts-node src/index.ts"
   },
   "dependencies": {
+    "@0glabs/0g-serving-broker": "^0.7.1",
     "@vaeb/mcp-server": "*",
     "cors": "^2.8.5",
     "dotenv": "^17.3.0",

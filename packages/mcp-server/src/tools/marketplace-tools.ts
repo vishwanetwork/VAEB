@@ -155,14 +155,28 @@ const HUMANS: Human[] = [
   },
 ];
 
+function fuzzyMatch(text: string, query: string): boolean {
+  // Direct substring match (either direction)
+  if (text.includes(query) || query.includes(text)) return true;
+  // Word-level overlap: any query word shares a 3+ char prefix with any text word
+  const textWords = text.split(/\s+/);
+  const queryWords = query.split(/\s+/);
+  for (const qw of queryWords) {
+    if (qw.length < 3) continue;
+    const prefix = qw.slice(0, Math.max(3, qw.length - 3)); // e.g. "groceries" → "grocer"
+    if (textWords.some((tw) => tw.startsWith(prefix) || prefix.startsWith(tw.slice(0, 3)))) return true;
+  }
+  return false;
+}
+
 function searchHumans(query: string): Human[] {
   const q = query.toLowerCase();
   return HUMANS.filter(
     (h) =>
       h.available &&
-      (h.skills.some((s) => s.includes(q)) ||
-        h.name.toLowerCase().includes(q) ||
-        h.bio.toLowerCase().includes(q))
+      (h.skills.some((s) => fuzzyMatch(s, q)) ||
+        fuzzyMatch(h.name.toLowerCase(), q) ||
+        fuzzyMatch(h.bio.toLowerCase(), q))
   );
 }
 

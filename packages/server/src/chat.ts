@@ -1,15 +1,21 @@
 /**
- * Chat endpoint — MCP-to-GPT bridge
+ * Chat endpoint — MCP-to-LLM bridge
  *
- * This module bridges VAEB MCP tools to the GPT-4o-mini AI agent:
+ * This module bridges VAEB MCP tools to an AI agent (OpenAI, DeepSeek, or 0G Serving):
  *   1. Imports tool definitions from @vaeb/mcp-server
  *   2. Auto-converts MCP tool schemas to OpenAI function calling format
  *   3. Routes tool calls through MCP handlers
  *   4. Returns MCP tool call metadata in the API response
+ *
+ * Providers:
+ *   LLM_PROVIDER=openai   → OpenAI GPT-4o-mini (default)
+ *   LLM_PROVIDER=deepseek → DeepSeek
+ *   LLM_PROVIDER=0g       → 0G decentralized AI serving network
  */
 
 import { Router, Request, Response } from 'express';
 import OpenAI from 'openai';
+import { ethers } from 'ethers';
 import { CONFIG, getChainConfig } from './config'; // must import first — loads dotenv
 import {
   getToolDefinitions,
@@ -20,7 +26,7 @@ import {
 
 const router = Router();
 
-// ─── LLM Client (OpenAI or DeepSeek) ──────────────────────────
+// ─── LLM Client (OpenAI, DeepSeek, or 0G Serving) ───────────
 
 const provider =
   (process.env.LLM_PROVIDER ||
@@ -29,9 +35,285 @@ const provider =
 const deepseekKey = process.env.DEEPSEEK_API_KEY || '';
 const openaiKey = process.env.OPENAI_API_KEY || '';
 const deepseekBaseUrl = process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1';
+
+// ─── 0G Serving State (lazy-initialized on first request) ────
+
+let zgBroker: any = null;
+let zgClient: OpenAI | null = null;
+let zgProviderAddress = '';
+let zgModel = '';
+let zgInitPromise: Promise<void> | null = null;
+
+async function initZG(): Promise<void> {
+  if (zgClient) return; // already initialized
+  if (zgInitPromise) return zgInitPromise; // init in progress
+
+  zgInitPromise = (async () => {
+    console.log('  Initializing 0G Serving broker...');
+    const { createZGComputeNetworkBroker } = await import('@0glabs/0g-serving-broker');
+
+    const zgRpcUrl = process.env.ZG_RPC_URL || 'https://evmrpc-testnet.0g.ai';
+    const zgProvider = new ethers.JsonRpcProvider(zgRpcUrl);
+    const zgWallet = new ethers.Wallet(CONFIG.agentPrivateKey, zgProvider);
+
+    zgBroker = await createZGComputeNetworkBroker(zgWallet);
+
+    // Discover chatbot services
+    const services = await zgBroker.inference.listService();
+    const chatServices = services.filter((s: any) => s.serviceType === 'chatbot');
+    if (chatServices.length === 0) {
+      throw new Error('No 0G chatbot services available. Check https://docs.0g.ai');
+    }
+    console.log(`  0G chatbot services: ${chatServices.map((s: any) => s.model).join(', ')}`);
+
+    // Pick provider (explicit env var, or first available chatbot)
+    const targetAddr = process.env.ZG_PROVIDER_ADDRESS;
+    const service = targetAddr
+      ? chatServices.find((s: any) => s.provider.toLowerCase() === targetAddr.toLowerCase())
+      : chatServices[0];
+
+    if (!service) {
+      throw new Error(
+        `0G provider ${targetAddr} not found. Available: ${chatServices.map((s: any) => s.provider).join(', ')}`
+      );
+    }
+
+    zgProviderAddress = service.provider;
+    console.log(`  0G provider: ${zgProviderAddress}`);
+    console.log(`  0G model:    ${service.model || 'unknown'}`);
+
+    // Get endpoint + model
+    const metadata = await zgBroker.inference.getServiceMetadata(zgProviderAddress);
+    zgModel = process.env.LLM_MODEL || metadata.model;
+
+    // Create OpenAI client pointing to 0G endpoint
+    zgClient = new OpenAI({
+      baseURL: metadata.endpoint,
+      apiKey: 'zg-serving', // placeholder — real auth via getRequestHeaders
+    });
+
+    // Ensure ledger exists with funds
+    try {
+      await zgBroker.ledger.getLedger();
+      console.log('  0G ledger exists');
+    } catch {
+      console.log('  Creating 0G ledger with 0.1 A0GI...');
+      await zgBroker.ledger.addLedger(0.1);
+    }
+
+    // Fund provider sub-account if needed (providers require >= 0.1 A0GI)
+    let subAccountExists = false;
+    try {
+      const account = await zgBroker.inference.getAccount(zgProviderAddress);
+      subAccountExists = true;
+      const balance = BigInt(account.balance || '0');
+      console.log(`  0G sub-account balance: ${ethers.formatEther(balance)} A0GI`);
+      if (balance < ethers.parseEther('0.1')) {
+        const needed = ethers.parseEther('0.1') - balance;
+        console.log(`  Topping up sub-account with ${ethers.formatEther(needed)} A0GI...`);
+        await zgBroker.ledger.transferFund(zgProviderAddress, 'inference', needed);
+      }
+    } catch (err: any) {
+      if (!subAccountExists) {
+        // Sub-account doesn't exist — create it
+        console.log('  Creating 0G sub-account with 0.1 A0GI...');
+        try {
+          await zgBroker.ledger.transferFund(zgProviderAddress, 'inference', ethers.parseEther('0.1'));
+        } catch (fundErr: any) {
+          console.warn(`  0G sub-account funding failed: ${fundErr.message}`);
+          console.warn('  Inference may fail — deposit more A0GI to the agent wallet');
+        }
+      } else {
+        console.warn(`  0G sub-account top-up skipped: ${err.message}`);
+      }
+    }
+
+    // Acknowledge provider signer (one-time)
+    try {
+      const acknowledged = await zgBroker.inference.acknowledged(zgProviderAddress);
+      if (!acknowledged) {
+        console.log('  Acknowledging 0G provider signer...');
+        await zgBroker.inference.acknowledgeProviderSigner(zgProviderAddress);
+      }
+    } catch {
+      // non-fatal — may already be acknowledged
+    }
+
+    console.log(`  0G Serving ready: ${metadata.endpoint} (model: ${zgModel})`);
+  })();
+
+  return zgInitPromise;
+}
+
+// ─── 0G Prompt-based Tool Calling ─────────────────────────────
+// The 0G model (Qwen 2.5 7B) doesn't support native OpenAI-style
+// `tools` parameter. Instead, we embed tool definitions in the system
+// prompt and parse structured <tool_call> blocks from the response.
+
+function buildZGToolPrompt(): string {
+  const toolDefs = getToolDefinitions()
+    .filter((t) => !INTERNAL_TOOLS.has(t.name))
+    .map((t) => {
+      const params = t.inputSchema?.properties
+        ? Object.entries(t.inputSchema.properties as Record<string, any>)
+            .map(([k, v]) => `${k}: ${v.type}${v.description ? ' — ' + v.description : ''}`)
+            .join(', ')
+        : '';
+      return `- ${t.name}(${params}): ${t.description}`;
+    })
+    .join('\n');
+
+  return `\nAVAILABLE TOOLS:
+To call a tool, respond with EXACTLY this format (no other text before or after):
+<tool_call>
+{"name": "tool_name", "arguments": {"key": "value"}}
+</tool_call>
+
+You may call ONE tool at a time. After calling a tool, wait for the result before responding to the user.
+Only call a tool when the user's request matches one. For general conversation, respond normally without tool calls.
+
+Tools:
+${toolDefs}`;
+}
+
+/**
+ * Parse <tool_call> blocks from model text output.
+ * Returns array of { name, arguments } objects.
+ */
+function parseToolCallsFromText(content: string): Array<{ name: string; arguments: Record<string, any> }> {
+  // Match <tool_call>...</tool_call> or <tool_call>...EOF (model may omit closing tag)
+  const regex = /<tool_call>\s*([\s\S]*?)(?:<\/tool_call>|$)/g;
+  const calls: Array<{ name: string; arguments: Record<string, any> }> = [];
+  let match;
+  while ((match = regex.exec(content)) !== null) {
+    try {
+      const jsonStr = match[1].trim();
+      if (!jsonStr) continue;
+      const parsed = JSON.parse(jsonStr);
+      if (parsed.name && typeof parsed.name === 'string') {
+        calls.push({ name: parsed.name, arguments: parsed.arguments || {} });
+      }
+    } catch {
+      // malformed JSON — skip
+    }
+  }
+  return calls;
+}
+
+/**
+ * Convert message history for 0G: tool_calls → text, tool → user message.
+ * The 0G model doesn't understand OpenAI tool roles, so we convert them.
+ */
+function convertMessagesForZG(
+  messages: OpenAI.ChatCompletionMessageParam[],
+  toolPrompt: string
+): OpenAI.ChatCompletionMessageParam[] {
+  const converted: OpenAI.ChatCompletionMessageParam[] = [];
+
+  for (const msg of messages) {
+    if (msg.role === 'system') {
+      converted.push({
+        role: 'system',
+        content: (msg.content as string) + toolPrompt,
+      });
+    } else if (msg.role === 'assistant' && (msg as any).tool_calls) {
+      // Convert native tool_calls back to text format
+      const calls = (msg as any).tool_calls as any[];
+      const text = calls
+        .map((tc: any) => {
+          const args = (() => { try { return JSON.parse(tc.function.arguments); } catch { return tc.function.arguments; } })();
+          return `<tool_call>\n${JSON.stringify({ name: tc.function.name, arguments: args })}\n</tool_call>`;
+        })
+        .join('\n');
+      converted.push({ role: 'assistant', content: text });
+    } else if (msg.role === 'tool') {
+      // Convert tool result to user message (0G doesn't support 'tool' role)
+      converted.push({
+        role: 'user',
+        content: `[Tool Result]: ${(msg as any).content}`,
+      });
+    } else {
+      converted.push(msg);
+    }
+  }
+
+  return converted;
+}
+
+/**
+ * Create a chat completion via the appropriate provider.
+ * For 0G, uses prompt-based tool calling (no native tools support).
+ */
+async function createCompletion(
+  params: OpenAI.ChatCompletionCreateParamsNonStreaming
+): Promise<OpenAI.ChatCompletion> {
+  if (provider === '0g') {
+    await initZG();
+
+    // Strip `tools` — 0G model doesn't support it; we use prompt-based calling
+    const { tools: _tools, ...paramsWithoutTools } = params;
+
+    // Convert messages: augment system prompt with tool defs, convert tool roles
+    const zgToolPrompt = buildZGToolPrompt();
+    const convertedMessages = convertMessagesForZG(params.messages, zgToolPrompt);
+
+    // Generate single-use billing headers
+    const contentForBilling = convertedMessages
+      .map((m: any) => (typeof m.content === 'string' ? m.content : ''))
+      .filter(Boolean)
+      .join('\n')
+      .slice(0, 1000);
+
+    const headers = await zgBroker.inference.getRequestHeaders(
+      zgProviderAddress,
+      contentForBilling
+    );
+
+    const result = await zgClient!.chat.completions.create(
+      { ...paramsWithoutTools, messages: convertedMessages, model: zgModel },
+      { headers: { ...headers } }
+    );
+
+    // Parse response for tool calls in text
+    const responseContent = result.choices[0]?.message?.content || '';
+    const parsedCalls = parseToolCallsFromText(responseContent);
+
+    if (parsedCalls.length > 0) {
+      // Transform into OpenAI-compatible tool_calls format so the existing loop works
+      (result.choices[0] as any).finish_reason = 'tool_calls';
+      (result.choices[0].message as any).tool_calls = parsedCalls.map((tc, i) => ({
+        id: `call_0g_${Date.now()}_${i}`,
+        type: 'function' as const,
+        function: {
+          name: tc.name,
+          arguments: JSON.stringify(tc.arguments),
+        },
+      }));
+      result.choices[0].message.content = null;
+    }
+
+    // Cache fee estimate for auto-balance management
+    try {
+      const chatID = (result as any).headers?.get?.('ZG-Res-Key') || result.id;
+      const usage = result.usage
+        ? JSON.stringify({ prompt_tokens: result.usage.prompt_tokens, completion_tokens: result.usage.completion_tokens })
+        : '';
+      await zgBroker.inference.processResponse(zgProviderAddress, chatID, usage);
+    } catch {
+      // non-critical — fee caching failure doesn't block inference
+    }
+
+    return result;
+  }
+
+  // OpenAI / DeepSeek path
+  return client.chat.completions.create(params);
+}
+
+// Resolved model name (may be overridden for 0G after init)
 const model =
   process.env.LLM_MODEL ||
-  (provider === 'deepseek' ? 'deepseek-chat' : 'gpt-4o-mini');
+  (provider === 'deepseek' ? 'deepseek-chat' : provider === '0g' ? 'auto' : 'gpt-4o-mini');
 
 if (provider === 'deepseek' && !deepseekKey) {
   console.error('WARNING: DEEPSEEK_API_KEY is not set in .env — chat will fail');
@@ -40,13 +322,14 @@ if (provider === 'openai' && !openaiKey) {
   console.error('WARNING: OPENAI_API_KEY is not set in .env — chat will fail');
 }
 
+// Standard client for OpenAI/DeepSeek (0G uses zgClient instead)
 const client = new OpenAI({
   apiKey: provider === 'deepseek' ? deepseekKey || 'missing' : openaiKey || 'missing',
   ...(provider === 'deepseek' ? { baseURL: deepseekBaseUrl } : {}),
 });
 
 console.log(`  LLM provider: ${provider}`);
-console.log(`  LLM model:    ${model}`);
+console.log(`  LLM model:    ${model}${provider === '0g' ? ' (resolved on first request)' : ''}`);
 
 // ─── MCP Config (passed to tool handlers) ────────────────────
 // Base config — chain-specific fields are set per-request via buildMcpConfig()
@@ -100,13 +383,34 @@ const toolNames = allDefs.map(t => t.name);
 console.log(`  MCP tools loaded: ${tools.length} AI-callable + ${INTERNAL_TOOLS.size} internal (${allDefs.length} total)`);
 console.log(`  Active tools: ${toolNames.join(', ')}`);
 
+// ─── GET /api/tools — Return available MCP tool definitions ──
+
+router.get('/tools', (_req: Request, res: Response) => {
+  const defs = getToolDefinitions();
+  const toolList = defs
+    .filter((t) => !INTERNAL_TOOLS.has(t.name))
+    .map((t) => ({
+      name: t.name,
+      description: t.description,
+      parameters: t.inputSchema?.properties
+        ? Object.entries(t.inputSchema.properties as Record<string, any>).map(([k, v]) => ({
+            name: k,
+            type: (v as any).type || 'any',
+            description: (v as any).description || '',
+            required: ((t.inputSchema?.required || []) as string[]).includes(k),
+          }))
+        : [],
+    }));
+  res.json({ tools: toolList, provider: provider === '0g' ? '0G Serving' : provider, count: toolList.length });
+});
+
 // ─── Conversation Store ──────────────────────────────────────
 
 const conversationStore = new Map<string, Array<OpenAI.ChatCompletionMessageParam>>();
 
 // ─── System Prompt ───────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are VAEB Agent — an AI assistant powered by MCP (Model Context Protocol) tools for verified on-chain execution on Base Sepolia. You implement ERC-8150 (Zero-Knowledge Agent Payment Verification) and x402 (HTTP 402 agent-to-agent micropayments on Base).
+const SYSTEM_PROMPT = `You are VAEB Agent — an AI assistant powered by ${provider === '0g' ? '0G decentralized AI serving network and ' : ''}MCP (Model Context Protocol) tools for verified on-chain execution on Base Sepolia. You implement ERC-8150 (Zero-Knowledge Agent Payment Verification) and x402 (HTTP 402 agent-to-agent micropayments on Base).
 
 The user holds their own USDC (non-custodial). When paying, the user first approves the AgentWallet to spend their tokens, then signs a ZKIntent commitment. The AgentWallet uses transferFrom to move funds on their behalf after ZK proof verification.
 
@@ -155,10 +459,12 @@ IMPORTANT: NEVER execute a transaction directly. ALL on-chain actions MUST go th
 
 MARKETPLACE FLOW (hiring humans for physical tasks):
 1. User describes a need → IMMEDIATELY call search_marketplace. Don't wait.
-2. Present results: name, rating, rate (USDC), skills, distance.
-3. Recommend the best match. Wait for explicit confirmation ("yes", "hire them", "go ahead").
-4. Call hire_human with the human's listed rate → this creates an intent bundle.
+2. Present results: name, rating, rate (USDC), skills, distance. Recommend the best match.
+3. When the user says "yes", "ok", "sure", "go ahead", "hire them", or ANY affirmative response → IMMEDIATELY call hire_human. Do NOT ask again. Do NOT say "shall we proceed?" — just call the tool.
+4. hire_human creates a payment intent bundle for the user to sign.
 5. Then follow the EXECUTION PIPELINE below to complete payment.
+
+CRITICAL: When the user confirms, call hire_human RIGHT AWAY. Never ask for confirmation twice.
 
 INTENT FLOW (ERC-8150 ZK-verified DeFi — swap, transfer, stake):
 1. User requests a DeFi action → call create_intent to build an intent bundle (nonce, expiry, actions, calldata).
@@ -219,8 +525,8 @@ router.post('/chat', async (req: Request, res: Response) => {
     // Add user message
     history.push({ role: 'user', content: message });
 
-    // Call DeepSeek with MCP-derived tools
-    let response = await client.chat.completions.create({
+    // Call LLM with MCP-derived tools
+    let response = await createCompletion({
       model,
       max_tokens: 1024,
       messages: [
@@ -290,7 +596,7 @@ router.post('/chat', async (req: Request, res: Response) => {
       }
 
       // Continue conversation with tool results
-      response = await client.chat.completions.create({
+      response = await createCompletion({
         model,
         max_tokens: 1024,
         messages: [

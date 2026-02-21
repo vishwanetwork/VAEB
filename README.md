@@ -6,7 +6,9 @@ The agent can't cheat — the ZK proof cryptographically binds the signed intent
 
 **Non-custodial (ERC-8150)** — The user holds their own funds. The AgentWallet never touches user tokens directly — it calls `transferFrom(user, recipient, amount)` after the user approves spending and signs a ZKIntent commitment. The agent submits the transaction on behalf of the owner.
 
-Built for ETH Denver 2026 on Base Sepolia. Authors of [ERC-8150](doc/eip8150.md) (Zero-Knowledge Agent Payment Verification).
+**Powered by 0G Serving** — The AI agent runs on [0G's decentralized AI inference network](https://0g.ai), not centralized APIs. 0G Serving provides an OpenAI-compatible endpoint backed by distributed GPU providers, so the entire stack — from AI reasoning to on-chain execution — is decentralized and verifiable.
+
+Built for ETH Denver 2026 and the [0G DeFAI Hackathon](https://0g.ai). Deployed on **Kite AI Testnet** and **Base Sepolia**. Authors of [ERC-8150](doc/eip8150.md) (Zero-Knowledge Agent Payment Verification).
 
 **x402 compatible** — VAEB MCP tools are designed to be gated by [x402](https://github.com/coinbase/x402) (HTTP 402 Payment Required). AI agents pay per tool call in USDC, directly from their wallet. The included **RentaHuman** marketplace demo shows this end-to-end: an AI agent discovers available humans, pays via x402 to hire them, and the payment is ZK-verified on-chain before execution.
 
@@ -66,13 +68,21 @@ Fill in `.env`:
 OWNER_PRIVATE_KEY=0x<owner-key>       # User who signs intents and holds funds
 AGENT_PRIVATE_KEY=0x<agent-key>       # Agent EOA that submits transactions
 OWNER_ADDRESS=0x<owner-address>
-BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
-CHAIN_ID=84532
 
-# AI chat backend (pick one)
-OPENAI_API_KEY=sk-...
-# or
-DEEPSEEK_API_KEY=sk-...
+# AI provider — 0G decentralized inference (recommended)
+LLM_PROVIDER=0g
+ZG_RPC_URL=https://evmrpc-testnet.0g.ai
+
+# Or use OpenAI / DeepSeek instead:
+# LLM_PROVIDER=openai
+# OPENAI_API_KEY=sk-...
+# LLM_PROVIDER=deepseek
+# DEEPSEEK_API_KEY=sk-...
+
+# Chain RPCs
+DEFAULT_CHAIN=kite_testnet
+KITE_TESTNET_RPC_URL=https://rpc-testnet.gokite.ai
+BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
 ```
 
 Generate wallets if needed:
@@ -81,9 +91,10 @@ Generate wallets if needed:
 node -e "const {ethers}=require('ethers'); const w=ethers.Wallet.createRandom(); console.log(w.address, w.privateKey)"
 ```
 
-Fund both with Base Sepolia ETH (owner needs ~0.01, agent needs ~0.001):
-- https://faucet.quicknode.com/base/sepolia
-- https://www.alchemy.com/faucets/base-sepolia
+Fund wallets for the chain you're using:
+- **Kite AI Testnet** (default): https://faucet.gokite.ai
+- **Base Sepolia**: https://faucet.quicknode.com/base/sepolia
+- **0G Testnet** (for AI inference): https://faucet.0g.ai — fund the agent address with A0GI
 
 ### 3. Build
 
@@ -97,7 +108,7 @@ npm run build
 node scripts/deploy.js
 ```
 
-This deploys MockZKVerifier, MockUSDC, and AgentWallet. It also:
+This deploys Groth16Verifier, Groth16VerifierAdapter, MockUSDC, and AgentWallet. It also:
 - Mints 1000 USDC to the owner (non-custodial)
 - Approves AgentWallet to spend owner's USDC
 - Updates `.env`, frontend config, and server config with new addresses
@@ -105,8 +116,8 @@ This deploys MockZKVerifier, MockUSDC, and AgentWallet. It also:
 Deploy to other chains via `DEFAULT_CHAIN`:
 
 ```bash
-DEFAULT_CHAIN=base node scripts/deploy.js         # Base mainnet
-DEFAULT_CHAIN=kite_testnet node scripts/deploy.js  # Kite AI Testnet
+DEFAULT_CHAIN=kite_testnet node scripts/deploy.js  # Kite AI Testnet (default)
+DEFAULT_CHAIN=base_sepolia node scripts/deploy.js  # Base Sepolia
 ```
 
 ### 5. Run the ZK demo (standalone)
@@ -157,8 +168,8 @@ Open [http://localhost:5173](http://localhost:5173), connect MetaMask (use the o
 - *"What's my balance?"* — check USDC balance
 - *"Send 10 USDC to 0x..."* — direct transfer intent
 
-The agent will:
-1. Ask you to approve USDC spending (ERC-20 approve)
+The UI shows available MCP tools, real-time execution logs, and on-chain transaction results. The agent will:
+1. Check existing USDC allowance (skips approve if already sufficient)
 2. Request your EIP-712 signature on the ZKIntent
 3. Generate a ZK proof and execute on-chain
 
@@ -178,18 +189,20 @@ vaeb/
 │   ├── Groth16VerifierAdapter.sol  # Bridges AgentWallet ↔ snarkjs verifier interface
 │   └── mocks/MockERC20.sol         # Test USDC
 ├── packages/
-│   ├── frontend/                   # React + Vite chat UI (MetaMask integration)
+│   ├── frontend/                   # React + Vite chat UI (MetaMask + tools panel)
 │   ├── intent-sdk/                 # TypeScript SDK — build IntentBundles, derive calldata
 │   ├── mcp-server/                 # MCP server — 23 tools for AI agent integration
 │   ├── prover-service/             # ZK prover service wrapping snarkjs
-│   └── server/                     # Express backend — AI chat + tool execution bridge
+│   └── server/                     # Express backend — 0G/OpenAI chat + MCP tool bridge
 ├── scripts/
 │   ├── deploy.js                   # Deploy contracts (chain-configurable via DEFAULT_CHAIN)
+│   ├── deploy-kite.js              # Deploy to Kite AI Testnet
+│   ├── setup-kite.js               # Mint USDC + approve on Kite (post-deploy fix)
 │   ├── deploy-mcp.js               # Build and configure the MCP server
 │   ├── demo-zkproof.js             # End-to-end ZK demo (real Groth16 on-chain)
 │   └── demo-live.js                # Simple demo (executeDirectly, no ZK)
 └── contracts/deployments/
-    └── base_sepolia.json           # Deployed contract addresses
+    └── deployments.json            # Deployed contract addresses (all chains)
 ```
 
 ---
@@ -272,10 +285,20 @@ The MCP server falls back to `executeDirectly()` (signature-only, no ZK proof) i
 
 Full-stack demo: React chat UI where you can talk to an AI agent that executes real on-chain payments.
 
+**AI Providers** — Set `LLM_PROVIDER` in `.env`:
+
+| Provider | Model | How it works |
+|---|---|---|
+| `0g` | Qwen 2.5 7B (auto-discovered) | 0G decentralized AI serving — OpenAI-compatible API via distributed GPU providers. Uses prompt-based tool calling. |
+| `openai` | GPT-4o-mini | OpenAI API with native function calling |
+| `deepseek` | deepseek-chat | DeepSeek API with native function calling |
+
+The 0G provider uses `@0glabs/0g-serving-broker` to discover available inference services, manage sub-account funding (A0GI tokens), and route requests through 0G's decentralized network. The agent wallet's private key (`AGENT_PRIVATE_KEY`) doubles as the 0G wallet.
+
 The frontend flow:
 1. Connect MetaMask → chat with agent
-2. Agent creates intent → frontend shows payment card
-3. User clicks "Sign & Pay" → approves USDC → signs ZKIntent → agent executes
+2. Agent creates intent → frontend shows payment card with MCP tool call log
+3. User clicks "Sign & Pay" → signs ZKIntent → agent executes with ZK proof
 
 ### RentaHuman — x402 marketplace demo
 
@@ -373,7 +396,7 @@ The `IntentVerifier.circom` circuit proves (off-chain) that:
 |---|---|---|
 | 0 | `valid` (output) | Always 1 when constraints pass |
 | 1 | `commitment` | Poseidon hash of the IntentBundle |
-| 2 | `chainId` | 84532 for Base Sepolia |
+| 2 | `chainId` | Chain ID (84532 for Base Sepolia, 2368 for Kite AI Testnet) |
 | 3 | `signerAddress` | Owner address (uint160) |
 | 4 | `multicallDataHash` | Poseidon hash of derived calldata |
 | 5 | `nonce` | Replay-prevention nonce |
@@ -415,6 +438,8 @@ cp build/Groth16Verifier.sol ../contracts/src/
 | Script | What it does |
 |---|---|
 | `node scripts/deploy.js` | Deploy contracts (chain-configurable via `DEFAULT_CHAIN`) |
+| `node scripts/deploy-kite.js` | Deploy to Kite AI Testnet specifically |
+| `node scripts/setup-kite.js` | Mint USDC to owner + approve AgentWallet on Kite |
 | `node scripts/deploy-mcp.js` | Build MCP server, print Claude Desktop config |
 | `node scripts/demo-zkproof.js` | Full end-to-end ZK demo (real Groth16, non-custodial) |
 | `node scripts/demo-live.js` | Simple demo using `executeDirectly()` |
@@ -430,9 +455,22 @@ cp build/Groth16Verifier.sol ../contracts/src/
 | `InvalidProof()` on-chain | `.zkey`, `.wasm`, and `Groth16Verifier.sol` must come from the same trusted setup |
 | `InvalidSignature()` on-chain | EIP-712 domain separator mismatch — check wallet address and ZKIntent types |
 | `deployed but has no code` | L2 RPC propagation delay — deploy script retries automatically |
-| `INSUFFICIENT_FUNDS` | Owner needs ~0.01 ETH, agent needs ~0.001 ETH on Base Sepolia |
+| `INSUFFICIENT_FUNDS` | Owner needs gas on the target chain (KITE for Kite, ETH for Base Sepolia) |
+| `eth_sendTransaction` 405 | RPC doesn't support `eth_sendTransaction` — run `node scripts/setup-kite.js` to pre-approve via private key |
 | Prover unavailable | Falls back to `executeDirectly()` automatically |
 | `NonceAlreadyUsed` | Intent was already executed — each nonce is single-use |
+| 0G "No chatbot services" | No inference providers available — check https://docs.0g.ai or switch to `LLM_PROVIDER=openai` |
+
+---
+
+## Supported chains
+
+| Chain | Chain ID | Default | RPC |
+|---|---|---|---|
+| Kite AI Testnet | 2368 | Yes | `https://rpc-testnet.gokite.ai` |
+| Base Sepolia | 84532 | | `https://sepolia.base.org` |
+
+Set `DEFAULT_CHAIN` in `.env` to switch. The frontend chain selector lets users switch at runtime.
 
 ---
 
@@ -440,5 +478,5 @@ cp build/Groth16Verifier.sol ../contracts/src/
 
 - ERC-8004 on-chain reputation registry (trust tools use hardcoded demo data)
 - x402 enforcement on MCP tools (tools are marked as paid with fees defined, but HTTP 402 gating is not yet wired — the RentaHuman marketplace flow demonstrates the pattern)
-- Contract verification on BaseScan
+- Contract verification on block explorers
 - Production trusted setup (uses local ceremony; production should use Hermez ptau)

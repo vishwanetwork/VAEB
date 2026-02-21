@@ -133,17 +133,28 @@ async function main() {
     console.log("  Skipping AgentWalletFactory (artifact not compiled)");
   }
 
-  // 6. Mint 1000 USDC to AgentWallet
-  console.log("\n  Minting 1000 USDC to AgentWallet...");
+  // 6. Mint 1000 USDC to owner (non-custodial: user holds funds)
+  console.log("\n  Minting 1000 USDC to owner (non-custodial)...");
   const mintTx = await usdc.contract.connect(owner).mint(
-    agentWallet.address,
+    owner.address,
     ethers.parseUnits("1000", 6),
     { nonce }
   );
   nonce++;
   await mintTx.wait();
-  const bal = await usdc.contract.balanceOf(agentWallet.address);
-  console.log(`    Balance: ${ethers.formatUnits(bal, 6)} USDC`);
+  const bal = await usdc.contract.balanceOf(owner.address);
+  console.log(`    Owner USDC balance: ${ethers.formatUnits(bal, 6)} USDC`);
+
+  // 6b. Approve AgentWallet to spend owner's USDC (ERC-8150 non-custodial)
+  console.log("  Approving AgentWallet to spend owner's USDC...");
+  const approveTx = await usdc.contract.connect(owner).approve(
+    agentWallet.address,
+    ethers.MaxUint256,
+    { nonce }
+  );
+  nonce++;
+  await approveTx.wait();
+  console.log(`    Approved: AgentWallet can transferFrom owner's USDC`);
 
   // 7. Fund agent with gas if needed
   const agentBal = await provider.getBalance(agent.address);
