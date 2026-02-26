@@ -1,0 +1,75 @@
+services:
+  # ZK Prover Service - Groth16 proof generation
+  prover-service:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: packages/prover-service/Dockerfile
+    container_name: vaeb-prover-service
+    image: vishwanetwork/vaeb-prover-service
+
+    ports:
+      - "13001:13001"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - PROVER_PORT=13001
+    volumes:
+      - ./circuits:/app/circuits:ro
+    restart: unless-stopped
+    networks:
+      - vaeb-network
+
+  # Backend API Server (includes MCP Server as library)
+  server:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: packages/server/Dockerfile
+    container_name: vaeb-server
+    image: vishwanetwork/vaeb-server
+    ports:
+      - "13002:13002"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - SERVER_PORT=13002
+      - PROVER_SERVICE_URL=http://prover-service:13001
+    volumes:
+      - ../contracts:/app/contracts:ro
+      - ../scripts:/app/scripts:ro
+    depends_on:
+      - prover-service
+    restart: unless-stopped
+    networks:
+      - vaeb-network
+
+  # Frontend Application
+  frontend:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: packages/frontend/Dockerfile
+    container_name: vaeb-frontend
+    image: vishwanetwork/vaeb-frontend
+    ports:
+      - "13080:80"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - VITE_API_URL=http://localhost:13002
+      - VITE_PROVER_URL=http://localhost:13001
+    depends_on:
+      - server
+      - prover-service
+    restart: unless-stopped
+    networks:
+      - vaeb-network
+
+networks:
+  vaeb-network:
+    driver: bridge
+    name: vaeb-network

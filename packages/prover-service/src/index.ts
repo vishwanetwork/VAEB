@@ -103,7 +103,7 @@ app.post("/verify", async (req, res) => {
 
 // ─── Start Server ─────────────────────────────────────────────
 
-const PORT = process.env.PROVER_PORT || 3001;
+const PORT = process.env.PROVER_PORT || 13001;
 
 app.listen(PORT, () => {
   console.log(`🔐 VAEB Prover Service running on port ${PORT}`);

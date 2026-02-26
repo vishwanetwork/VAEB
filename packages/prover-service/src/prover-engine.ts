@@ -132,7 +132,7 @@ export class ProverEngine {
   async verifyProof(proof: string, publicSignals: string[]): Promise<boolean> {
     if (this.simulatedMode) return true;
 
-    const snarkjs = await import("snarkjs");
+    const snarkjs = await import("snarkjs") as any;
     const vkey = JSON.parse(fs.readFileSync(this.vkeyPath, "utf-8"));
     const decodedProof = decodeProofFromAbi(proof);
     return snarkjs.groth16.verify(vkey, publicSignals, decodedProof);
@@ -143,7 +143,7 @@ export class ProverEngine {
   }
 
   private async generateRealProof(input: ProverInput): Promise<ProofResult> {
-    const snarkjs = await import("snarkjs");
+    const snarkjs = await import("snarkjs") as any;
     const circuitInput = this.buildCircuitInput(input);
 
     const { proof, publicSignals } = await snarkjs.groth16.fullProve(

@@ -60,7 +60,7 @@ export function getChainConfig(chainKey?: string): ChainConfig {
 const defaultChain = getChainConfig();
 
 export const CONFIG = {
-  port: parseInt(process.env.PORT || '3002'),
+  port: parseInt(process.env.PORT || '13002'),
   agentPrivateKey: process.env.AGENT_PRIVATE_KEY || '',
   ownerAddress: process.env.OWNER_ADDRESS || '',
   // Default chain values (backward compat for legacy routes)
