@@ -105,7 +105,7 @@ async function handleInitBTCPayment(
   const { 
     amount_btc, 
     sui_address,
-    network = "testnet", 
+    network = "mainnet",
     expiry_minutes = 60,
     payer_address,
     payment_header,
@@ -118,7 +118,7 @@ async function handleInitBTCPayment(
     return {
       result: {
         success: false,
-        error: `无效的 BTC 金额: ${amount_btc}`,
+        error: `Invalid BTC amount: ${amount_btc}`,
       },
     };
   }
@@ -128,7 +128,7 @@ async function handleInitBTCPayment(
     return {
       result: {
         success: false,
-        error: `无效的 Sui 地址格式。应为: 0x 后跟 64 位十六进制字符`,
+        error: `Invalid Sui address format. Expected: 0x followed by 64 hex characters`,
       },
     };
   }
@@ -149,7 +149,7 @@ async function handleInitBTCPayment(
       return {
         result: {
           success: false,
-          error: "支付意图未找到或已过期",
+          error: "Payment intent not found or expired",
         },
       };
     }
@@ -177,7 +177,7 @@ async function handleInitBTCPayment(
         return {
           result: {
             success: false,
-            error: `支付后请求失败: HTTP ${response.status}`,
+            error: `Post-payment request failed: HTTP ${response.status}`,
             details: errorText,
           },
         };
@@ -210,11 +210,11 @@ async function handleInitBTCPayment(
             network,
             status: "awaiting_deposit",
             expires_at: new Date(existingIntent.expiresAt * 1000).toISOString(),
-            message: `支付成功！BTC质押已初始化。请将 ${amount_btc} BTC 发送到质押地址: ${depositAddress}`,
+            message: `Payment successful! BTC staking initialized. Please send ${amount_btc} BTC to deposit address: ${depositAddress}`,
             instructions: {
-              step1: `发送 ${amount_btc} BTC 到: ${depositAddress}`,
-              step2: "等待比特币网络确认",
-              step3: "提供交易哈希完成确认",
+              step1: `Send ${amount_btc} BTC to: ${depositAddress}`,
+              step2: "Wait for Bitcoin network confirmation",
+              step3: "Provide the transaction hash to confirm",
             },
           },
           intent: {
@@ -234,7 +234,7 @@ async function handleInitBTCPayment(
       return {
         result: {
           success: false,
-          error: "支付后未返回有效的BTC地址",
+          error: "No valid BTC address returned after payment",
           response: responseData,
         },
       };
@@ -242,7 +242,7 @@ async function handleInitBTCPayment(
       return {
         result: {
           success: false,
-          error: `支付后请求失败: ${error.message}`,
+          error: `Post-payment request failed: ${error.message}`,
         },
       };
     }
@@ -342,7 +342,7 @@ async function handleInitBTCPayment(
               pay_to: requirement.payTo,
               max_timeout_seconds: requirement.maxTimeoutSeconds,
             },
-            message: `正在初始化 BTC 质押服务...系统将自动弹出支付界面。`,
+            message: `Initializing BTC staking service... The payment UI will appear automatically.`,
             ui_ready: true,
             auto_trigger: true,
           },
@@ -365,7 +365,7 @@ async function handleInitBTCPayment(
       return {
         result: {
           success: false,
-          error: "无法解析 x402 支付要求",
+          error: "Unable to parse x402 payment requirements",
           response: responseBody,
         },
       };
@@ -400,7 +400,7 @@ async function handleInitBTCPayment(
             network,
             status: "awaiting_deposit",
             expires_at: new Date(expiresAt * 1000).toISOString(),
-            message: `BTC 质押地址已生成。系统将自动显示存款界面。`,
+            message: `BTC staking address generated. The deposit UI will appear automatically.`,
             ui_ready: true,
             auto_trigger: true,
           },
@@ -424,7 +424,7 @@ async function handleInitBTCPayment(
     return {
       result: {
         success: false,
-        error: `桥接服务返回意外响应: HTTP ${discoveryResponse.status}`,
+        error: `Bridge service returned unexpected response: HTTP ${discoveryResponse.status}`,
         details: errorText,
       },
     };
@@ -434,7 +434,7 @@ async function handleInitBTCPayment(
     return {
       result: {
         success: false,
-        error: `调用桥接服务失败: ${error.message}`,
+        error: `Failed to call bridge service: ${error.message}`,
         stack: error.stack,
       },
     };
@@ -458,7 +458,7 @@ async function handleConfirmBTCTransfer(
     return {
       result: {
         success: false,
-        error: `BTC 支付意图未找到: ${intent_id}`,
+        error: `BTC payment intent not found: ${intent_id}`,
       },
     };
   }
@@ -469,7 +469,7 @@ async function handleConfirmBTCTransfer(
     return {
       result: {
         success: false,
-        error: "支付意图已过期",
+        error: "Payment intent expired",
         expired_at: new Date(intent.expiresAt * 1000).toISOString(),
       },
     };
@@ -479,7 +479,7 @@ async function handleConfirmBTCTransfer(
     return {
       result: {
         success: false,
-        error: `无效状态: ${intent.status}。应为: awaiting_deposit`,
+        error: `Invalid status: ${intent.status}. Expected: awaiting_deposit`,
       },
     };
   }
@@ -494,7 +494,7 @@ async function handleConfirmBTCTransfer(
         return {
           result: {
             success: false,
-            error: `交易未找到: ${tx_hash}。请验证交易哈希后重试。`,
+            error: `Transaction not found: ${tx_hash}. Please verify the transaction hash and try again.`,
           },
         };
       }
@@ -506,8 +506,8 @@ async function handleConfirmBTCTransfer(
       btcPaymentStore.set(intent_id, intent);
 
       const confirmationStatus = txData.status?.confirmed 
-        ? (txData.status.block_height ? "已确认" : "待确认") 
-        : "待确认";
+        ? (txData.status.block_height ? "confirmed" : "pending")
+        : "pending";
 
       return {
         result: {
@@ -520,15 +520,15 @@ async function handleConfirmBTCTransfer(
           network: intent.network,
           status: "deposit_received",
           explorer_url: `${apiBase}/tx/${tx_hash}`,
-          message: `交易已确认。BTCVC 将发放到 Sui 地址: ${intent.suiAddress}`,
-          next_steps: `后端服务将自动处理 BTCVC 发放`,
+          message: `Transaction confirmed. BTCVC will be minted to Sui address: ${intent.suiAddress}`,
+          next_steps: `The backend will automatically process BTCVC distribution`,
         },
       };
     } catch (error: any) {
       return {
         result: {
           success: false,
-          error: `确认转账失败: ${error.message}`,
+          error: `Failed to confirm transfer: ${error.message}`,
         },
       };
     }
@@ -549,11 +549,11 @@ async function handleConfirmBTCTransfer(
       status: intent.status,
       deposit_address: intent.depositAddress,
       amount_btc: intent.amountBTC,
-      message: "等待 BTC 存款。请发送 BTC 到质押地址并提供交易哈希。",
+      message: "Awaiting BTC deposit. Please send BTC to the staking address and provide the transaction hash.",
       instructions: {
-        step1: `发送 ${intent.amountBTC} BTC 到: ${intent.depositAddress}`,
-        step2: "等待网络确认",
-        step3: `调用 confirm_btc_transfer 并提供 tx_hash`,
+        step1: `Send ${intent.amountBTC} BTC to: ${intent.depositAddress}`,
+        step2: "Wait for network confirmation",
+        step3: `Call confirm_btc_transfer with tx_hash`,
       },
     },
   };
@@ -583,7 +583,7 @@ async function handleBroadcastBTCTransaction(
         return {
           result: {
             success: false,
-            error: `在 ${network} 上未找到交易: ${tx_hash}`,
+            error: `Transaction not found on ${network}: ${tx_hash}`,
           },
         };
       }
@@ -595,7 +595,7 @@ async function handleBroadcastBTCTransaction(
           success: true,
           tx_hash,
           network,
-          status: txData.status?.confirmed ? "已确认" : "待确认",
+          status: txData.status?.confirmed ? "confirmed" : "pending",
           confirmations: txData.status?.block_height || 0,
           explorer_url: `${apiBase}/tx/${tx_hash}`,
         },
@@ -604,7 +604,7 @@ async function handleBroadcastBTCTransaction(
       return {
         result: {
           success: false,
-          error: `验证交易失败: ${error.message}`,
+          error: `Failed to verify transaction: ${error.message}`,
         },
       };
     }
@@ -614,7 +614,7 @@ async function handleBroadcastBTCTransaction(
     return {
       result: {
         success: false,
-        error: `BTC 支付意图未找到: ${intent_id}`,
+        error: `BTC payment intent not found: ${intent_id}`,
       },
     };
   }
@@ -639,7 +639,7 @@ async function handleBroadcastBTCTransaction(
         return {
           result: {
             success: false,
-            error: `广播失败: ${errorText}`,
+            error: `Broadcast failed: ${errorText}`,
           },
         };
       }
@@ -657,7 +657,7 @@ async function handleBroadcastBTCTransaction(
           network: intent.network,
           status: "broadcasted",
           explorer_url: `${apiBase}/tx/${broadcastTxHash}`,
-          message: "交易广播成功。",
+          message: "Transaction broadcast successful.",
         },
       };
     } catch (error: any) {
@@ -666,7 +666,7 @@ async function handleBroadcastBTCTransaction(
       return {
         result: {
           success: false,
-          error: `广播失败: ${error.message}`,
+          error: `Broadcast failed: ${error.message}`,
         },
       };
     }
@@ -696,7 +696,7 @@ async function handleGetBTCPaymentStatus(
     return {
       result: {
         success: false,
-        error: `BTC 支付意图未找到: ${intent_id}`,
+        error: `BTC payment intent not found: ${intent_id}`,
       },
     };
   }
@@ -751,7 +751,7 @@ async function handleRequestBTCWallet(
   },
   _config: MCPConfig
 ): Promise<{ result: any; intent?: any }> {
-  const { reason = "BTC 质押", sui_address } = args;
+  const { reason = "BTC staking", sui_address } = args;
 
   return {
     result: {
@@ -759,11 +759,11 @@ async function handleRequestBTCWallet(
       action: "request_btc_wallet_connection",
       reason,
       sui_address,
-      message: `请连接您的 BTC 钱包以${reason}。`,
+      message: `Please connect your BTC wallet for ${reason}.`,
       instructions: {
-        step1: "点击'连接BTC钱包'按钮",
-        step2: "在弹出窗口中选择您的 BTC 钱包（Xverse、Unisat 或 Leather）",
-        step3: "授权连接后即可继续",
+        step1: "Click the 'Connect BTC Wallet' button",
+        step2: "Select your BTC wallet (Xverse, Unisat, or Leather) in the popup",
+        step3: "Authorize the connection to continue",
       },
     },
     intent: {

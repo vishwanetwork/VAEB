@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { ethers } from 'ethers';
-import { CHAIN_CONFIGS, DEFAULT_CHAIN } from './config';
+import { CHAIN_CONFIGS, DEFAULT_CHAIN, CONFIG } from './config';
 import { fetchBalances, fetchTools, sendChatMessage, executeChatIntent, ChatResponse, ExecuteResponse, ToolCallInfo, ToolDef } from './api';
 import { BTCWalletConnector, useBTCWallet, btcWalletStyles, sendBitcoinGlobal } from './btc-wallet';
 import { X402PaymentCard, BTCDepositCard, executeX402Payment, X402PaymentDetails, X402Intent, x402Styles } from './x402-payment';
@@ -166,11 +166,14 @@ export default function App() {
           asset: intent.paymentAsset,
           payTo: intent.payTo,
           network: 'base',
-          description: '获取 BTC 质押地址',
+          description: 'Obtain BTC staking address',
           maxTimeoutSeconds: 60,
           resource: 'https://mcp-x402.vishwanetwork.xyz/api/bridge/sui/btc2btcvc',
         });
-        setX402Intent(intent as X402Intent);
+        setX402Intent({
+          ...intent,
+          intentId: intent.reviewId || intent.intentId,
+        } as X402Intent);
       }
 
       // Check if BTC deposit address is ready
@@ -192,7 +195,7 @@ export default function App() {
           setMessages(prev => [...prev, {
             id: nextId(),
             role: 'system',
-            text: 'BTC 质押地址已生成。请先连接您的 BTC 钱包。',
+            text: 'BTC staking address generated. Please connect your BTC wallet first.',
           }]);
         }
       }
@@ -293,7 +296,7 @@ export default function App() {
       setMessages([{
         id: nextId(),
         role: 'assistant',
-        text: `Welcome! Your agent wallet is ready.\n\nI'm connected to the Rent a Human marketplace — I can find and hire real people to handle physical tasks for you. Groceries, dog walking, deliveries, you name it.\n\nWhat do you need done today?`,
+        text: `Welcome! Your wallet is connected.\n\nI can help you stake BTC to receive BTCVC on Sui, or execute DeFi transactions with ZK verification.\n\nWhat would you like to do?`,
       }]);
       setShowSuggestions(true);
 
@@ -422,60 +425,41 @@ export default function App() {
       setMessages(prev => [...prev, {
         id: nextId(),
         role: 'system',
-        text: `✓ 支付签名已生成，正在获取 BTC 质押地址...`,
+        text: `Payment signature generated, fetching BTC staking address...`,
       }]);
 
-      // Step 2: Directly call the x402 endpoint with payment header (payai format)
-      const params = new URLSearchParams({
-        suiAddress: x402Intent.suiAddress,
-        amount: x402Intent.amount,
-        network: x402Intent.network,
+      // Step 2: Route payment through the server (updates btcPaymentStore + calls bridge)
+      console.log('[X402] Sending payment to server for intent:', x402Intent.intentId);
+
+      const response = await fetch(`${CONFIG.apiUrl}/btc-payment/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          intentId: x402Intent.intentId,
+          paymentHeader: paymentResult.paymentHeader,
+          amountBtc: x402Intent.amount,
+          suiAddress: x402Intent.suiAddress,
+          network: x402Intent.network,
+        }),
       });
-
-      const fullUrl = `https://mcp-x402.vishwanetwork.xyz/api/bridge/sui/btc2btcvc?${params}`;
-
-      console.log('[X402] Calling:', fullUrl);
-      console.log('[X402] Payment header:', paymentResult.paymentHeader.slice(0, 50) + '...');
-
-      const response = await fetch(fullUrl, {
-        method: 'GET',
-        headers: {
-          'Accept': 'application/json',
-          'X-PAYMENT': paymentResult.paymentHeader,
-        },
-      });
-
-      console.log('[X402] Response status:', response.status);
-
-      if (response.status === 402) {
-        const errorData = await response.json();
-        throw new Error(`支付未接受: ${errorData.error || '请检查签名和网络'}`);
-      }
 
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`获取 BTC 地址失败: ${response.status} - ${errorText}`);
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Server error: ${response.status}`);
       }
 
       const resultData = await response.json();
-      console.log('[X402] BTC deposit address received:', resultData);
+      console.log('[X402] Server response:', resultData);
 
-      // Check x-payment-response header for tx hash
-      const xPaymentResponse = response.headers.get('x-payment-response');
-      let txInfo = null;
-      if (xPaymentResponse) {
-        try {
-          txInfo = JSON.parse(atob(xPaymentResponse));
-        } catch (e) {
-          console.log('无法解析 x-payment-response');
-        }
+      if (!resultData.success) {
+        throw new Error(resultData.error || 'Payment failed on server');
       }
 
       // Add success message
       setMessages(prev => [...prev, {
         id: nextId(),
         role: 'system',
-        text: `✓ BTC 质押地址已获取！交易哈希: ${txInfo?.transactionHash?.slice(0, 10) || 'N/A'}...`,
+        text: `BTC staking address obtained! Preparing deposit details...`,
       }]);
 
       // Clear payment UI
@@ -483,8 +467,8 @@ export default function App() {
       setX402Intent(null);
 
       // Step 3: Show BTC deposit card if we have the address
-      if (resultData.wallet || resultData.data?.wallet) {
-        const depositAddress = resultData.wallet || resultData.data?.wallet;
+      const depositAddress = resultData.deposit_address;
+      if (depositAddress) {
         setBtcDepositInfo({
           depositAddress,
           amount: x402Intent.amount,
@@ -498,7 +482,7 @@ export default function App() {
       setMessages(prev => [...prev, {
         id: nextId(),
         role: 'system',
-        text: `❌ 支付失败: ${err.message}`,
+        text: `Payment failed: ${err.message}`,
       }]);
     } finally {
       setPayingX402(false);
@@ -508,7 +492,7 @@ export default function App() {
   const handleX402Cancel = useCallback(() => {
     setX402Payment(null);
     setX402Intent(null);
-    sendMessage("我暂时不想支付服务费");
+    sendMessage("I don't want to pay the service fee right now");
   }, [sendMessage]);
 
   // ── BTC Deposit Confirmation ──────────────────────────────
@@ -519,7 +503,7 @@ export default function App() {
     setConfirmingBTC(true);
     try {
       // Manual confirmation - user provides tx hash
-      const txHash = prompt("请输入您的 BTC 交易哈希 (txid):");
+      const txHash = prompt("Please enter your BTC transaction hash (txid):");
 
       if (!txHash) {
         setConfirmingBTC(false);
@@ -528,7 +512,7 @@ export default function App() {
 
       // Send confirmation message
       await sendMessage(
-        `我已发送 BTC，交易哈希是 ${txHash}，intent_id 是 ${btcDepositInfo.intentId}，请确认存款`,
+        `I have sent BTC, transaction hash is ${txHash}, intent_id is ${btcDepositInfo.intentId}, please confirm the deposit`,
         true
       );
 
@@ -538,7 +522,7 @@ export default function App() {
       setMessages(prev => [...prev, {
         id: nextId(),
         role: 'system',
-        text: `确认失败: ${err.message}`,
+        text: `Confirmation failed: ${err.message}`,
       }]);
     } finally {
       setConfirmingBTC(false);
@@ -562,12 +546,12 @@ export default function App() {
       setMessages(prev => [...prev, {
         id: nextId(),
         role: 'system',
-        text: `✓ BTC 交易已广播！交易哈希: ${txid.slice(0, 10)}...`,
+        text: `BTC transaction broadcast! Tx hash: ${txid.slice(0, 10)}...`,
       }]);
 
       // Send confirmation to backend
       await sendMessage(
-        `我已发送 BTC，交易哈希是 ${txid}，intent_id 是 ${btcDepositInfo.intentId}，请确认存款`,
+        `I have sent BTC, transaction hash is ${txid}, intent_id is ${btcDepositInfo.intentId}, please confirm the deposit`,
         true
       );
 
@@ -578,7 +562,7 @@ export default function App() {
       setMessages(prev => [...prev, {
         id: nextId(),
         role: 'system',
-        text: `❌ BTC 交易失败: ${err.message}`,
+        text: `BTC transaction failed: ${err.message}`,
       }]);
     } finally {
       setSigningBTC(false);
@@ -595,7 +579,7 @@ export default function App() {
     setMessages(prev => [...prev, {
       id: nextId(),
       role: 'system',
-      text: `✓ BTC 钱包已连接: ${btcAddress.slice(0, 10)}...${btcAddress.slice(-8)} (${walletType})`,
+      text: `BTC wallet connected: ${btcAddress.slice(0, 10)}...${btcAddress.slice(-8)} (${walletType})`,
     }]);
 
     // Check if we already have a BTC deposit address pending
@@ -616,17 +600,17 @@ export default function App() {
       setMessages(prev => [...prev, {
         id: nextId(),
         role: 'system',
-        text: '现在您可以从已连接的 BTC 钱包发送 BTC 到质押地址。',
+        text: 'You can now send BTC from your connected wallet to the staking address.',
       }]);
     } else {
       // Need to get the deposit address
-      await sendMessage(`我已连接BTC钱包，地址是 ${btcAddress}，请获取BTC质押地址`, false);
+      await sendMessage(`BTC wallet connected, address is ${btcAddress}, please get the BTC staking address`, false);
     }
   }, [sendMessage, messages]);
 
   const handleBTCCancel = useCallback(() => {
     setShowBTCConnector(false);
-    sendMessage("我暂时不想连接BTC钱包");
+    sendMessage("I don't want to connect a BTC wallet right now");
   }, [sendMessage]);
 
   // ── Key handler ───────────────────────────────────────────
@@ -790,13 +774,13 @@ export default function App() {
 
 
                   {/* X402 */}
-                  {msg.intent && msg.intent.type == 'BTC_STAKE_PAYMENT_REQUIRED' && (
+                  {msg.intent && msg.intent.type == 'BTC_STAKE_PAYMENT_REQUIRED' && x402Payment && (
                     <div className="intent-card fade-in">
                       <div className="intent-header">
                         <div className="intent-dots">
                           {[0, 1, 2].map(i => <span key={i} className="intent-dot" />)}
                         </div>
-                        <span className="intent-label">BTC Deposit</span>
+                        <span className="intent-label">x402 Payment</span>
                       </div>
                       <div className="intent-body">
                         <div className="intent-row">
@@ -993,10 +977,10 @@ export default function App() {
             {showSuggestions && !loading && (
               <div className="suggestions fade-in">
                 {[
-                  "I need someone to pick up groceries for me",
-                  "Can you find a dog walker nearby?",
-                  "I need help moving some furniture this weekend",
-                  "Who can run a few errands around town?",
+                  "I want to stake 0.0001 BTC for BTCVC",
+                  "What's my USDC balance?",
+                  "What's the price of ETH?",
+                  "Send 10 USDC to 0x...",
                 ].map((text, i) => (
                   <button
                     key={i}
@@ -1063,7 +1047,7 @@ export default function App() {
                 ref={inputRef}
                 className="chat-input"
                 type="text"
-                placeholder="Tell me what errand you need..."
+                placeholder="Stake BTC, check balances, or send tokens..."
                 value={input}
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
@@ -1093,8 +1077,8 @@ export default function App() {
         <BTCWalletConnector
           onConnect={handleBTCConnect}
           onCancel={handleBTCCancel}
-          title="连接BTC钱包"
-          description="请连接您的BTC钱包以完成质押流程。您将使用此钱包发送BTC到质押地址。"
+          title="Connect BTC Wallet"
+          description="Please connect your BTC wallet to complete the staking process. You will use this wallet to send BTC to the staking address."
         />
       )}
 

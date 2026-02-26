@@ -62,8 +62,8 @@ export async function executeX402Payment(
 
   if (balance < requiredAmount) {
     throw new Error(
-      `USDC 余额不足。需要: ${ethers.formatUnits(requiredAmount, 6)} USDC, ` +
-      `当前: ${ethers.formatUnits(balance, 6)} USDC`
+      `Insufficient USDC balance. Required: ${ethers.formatUnits(requiredAmount, 6)} USDC, ` +
+      `Current: ${ethers.formatUnits(balance, 6)} USDC`
     );
   }
 
@@ -76,7 +76,7 @@ export async function executeX402Payment(
   const response402 = await fetch(payment.resource);
 
   const body402 = await response402.json();
-  console.log('📋 支付要求:', body402);
+  console.log('Payment requirements:', body402);
 
   const accepts = body402.accepts[0];
   const amount = accepts.maxAmountRequired || accepts.amount;
@@ -175,13 +175,13 @@ export async function fetchWithX402Payment(
     // Payment still required - parse error
     const errorData = await response.json();
     console.error('[X402] Payment required:', errorData);
-    throw new Error(`支付未接受: ${errorData.error || '请检查签名和网络'}`);
+    throw new Error(`Payment not accepted: ${errorData.error || 'Please check signature and network'}`);
   }
 
   if (!response.ok) {
     const errorText = await response.text();
     console.error('[X402] Request failed:', response.status, errorText);
-    throw new Error(`请求失败: ${response.status} - ${errorText}`);
+    throw new Error(`Request failed: ${response.status} - ${errorText}`);
   }
 
   return response;
@@ -227,39 +227,39 @@ export function X402PaymentCard({
     <div className="x402-payment-card">
       <div className="x402-payment-header">
         <div className="x402-payment-icon">💎</div>
-        <span className="x402-payment-title">x402 支付</span>
+        <span className="x402-payment-title">x402 Payment</span>
       </div>
 
       <div className="x402-payment-body">
         <p className="x402-payment-desc">
-          获取 BTC 质押地址需要支付服务费
+          Service fee required to obtain BTC staking address
         </p>
 
         <div className="x402-payment-details">
           <div className="x402-payment-row">
-            <span className="x402-payment-label">金额</span>
+            <span className="x402-payment-label">Amount</span>
             <span className="x402-payment-value highlight">{payment.amountDisplay}</span>
           </div>
 
           <div className="x402-payment-row">
-            <span className="x402-payment-label">代币</span>
+            <span className="x402-payment-label">Token</span>
             <span className="x402-payment-value">USDC</span>
           </div>
 
           <div className="x402-payment-row">
-            <span className="x402-payment-label">网络</span>
+            <span className="x402-payment-label">Network</span>
             <span className="x402-payment-value">Base</span>
           </div>
 
           <div className="x402-payment-row">
-            <span className="x402-payment-label">收款方</span>
+            <span className="x402-payment-label">Recipient</span>
             <span className="x402-payment-value mono">
               {payment.payTo.slice(0, 8)}...{payment.payTo.slice(-6)}
             </span>
           </div>
 
           <div className="x402-payment-row">
-            <span className="x402-payment-label">用途</span>
+            <span className="x402-payment-label">Purpose</span>
             <span className="x402-payment-value">{payment.description}</span>
           </div>
         </div>
@@ -270,14 +270,14 @@ export function X402PaymentCard({
             onClick={onPay}
             disabled={paying}
           >
-            {paying ? '支付中...' : '确认支付'}
+            {paying ? 'Paying...' : 'Confirm Payment'}
           </button>
           <button
             className="x402-payment-btn x402-payment-btn-secondary"
             onClick={onCancel}
             disabled={paying}
           >
-            取消
+            Cancel
           </button>
         </div>
       </div>
@@ -318,36 +318,36 @@ export function BTCDepositCard({
     <div className="btc-deposit-card">
       <div className="btc-deposit-header">
         <div className="btc-deposit-icon">₿</div>
-        <span className="btc-deposit-title">BTC 转账</span>
+        <span className="btc-deposit-title">BTC Transfer</span>
       </div>
 
       <div className="btc-deposit-body">
         {btcWalletConnected ? (
           <div className="btc-transaction-preview">
-            <h4>交易预览</h4>
+            <h4>Transaction Preview</h4>
             <div className="btc-tx-row">
-              <span className="btc-tx-label">从</span>
-              <span className="btc-tx-value mono">{fromAddress || '已连接钱包'}</span>
+              <span className="btc-tx-label">From</span>
+              <span className="btc-tx-value mono">{fromAddress || 'Connected Wallet'}</span>
             </div>
             <div className="btc-tx-row">
-              <span className="btc-tx-label">到</span>
+              <span className="btc-tx-label">To</span>
               <span className="btc-tx-value mono">{depositAddress}</span>
             </div>
             <div className="btc-tx-row">
-              <span className="btc-tx-label">金额</span>
+              <span className="btc-tx-label">Amount</span>
               <span className="btc-tx-value highlight">{amount} BTC</span>
             </div>
             <div className="btc-tx-row">
-              <span className="btc-tx-label">网络</span>
+              <span className="btc-tx-label">Network</span>
               <span className="btc-tx-value">Bitcoin</span>
             </div>
             <p className="btc-tx-hint">
-              点击下方按钮，在钱包中确认并签名交易
+              Click the button below to confirm and sign the transaction in your wallet
             </p>
           </div>
         ) : (
           <p className="btc-deposit-desc">
-            请从您的 BTC 钱包发送 <strong>{amount} BTC</strong> 到以下地址：
+            Please send <strong>{amount} BTC</strong> from your BTC wallet to the following address:
           </p>
         )}
 
@@ -358,20 +358,20 @@ export function BTCDepositCard({
               className="btc-deposit-copy-btn"
               onClick={() => copyToClipboard(depositAddress)}
             >
-              复制
+              Copy
             </button>
           </div>
         )}
 
         <div className="btc-deposit-info">
           <div className="btc-deposit-info-item">
-            <span className="btc-deposit-info-label">目标地址 (Sui)</span>
+            <span className="btc-deposit-info-label">Destination (Sui)</span>
             <span className="btc-deposit-info-value mono">
               {suiAddress.slice(0, 10)}...{suiAddress.slice(-8)}
             </span>
           </div>
           <div className="btc-deposit-info-item">
-            <span className="btc-deposit-info-label">接收代币</span>
+            <span className="btc-deposit-info-label">Receive Token</span>
             <span className="btc-deposit-info-value">BTCVC</span>
           </div>
         </div>
@@ -384,11 +384,11 @@ export function BTCDepositCard({
                 onClick={onSignAndSend}
                 disabled={signing}
               >
-                {signing ? '等待钱包确认...' : `在钱包中确认交易`}
+                {signing ? 'Waiting for wallet confirmation...' : `Confirm Transaction in Wallet`}
               </button>
               {parseFloat(amount) < 0.00000546 && (
                 <p className="btc-amount-warning">
-                  ⚠️ 金额太小可能导致交易失败。建议至少发送 0.00001 BTC
+                  Warning: Amount may be too small and could cause the transaction to fail. Recommend sending at least 0.00001 BTC
                 </p>
               )}
             </div>
@@ -398,19 +398,19 @@ export function BTCDepositCard({
               onClick={onConfirm}
               disabled={confirming}
             >
-              {confirming ? '确认中...' : '我已发送 BTC'}
+              {confirming ? 'Confirming...' : 'I Have Sent BTC'}
             </button>
           )}
         </div>
 
         {!btcWalletConnected && (
           <div className="btc-deposit-instructions">
-            <h4>操作步骤：</h4>
+            <h4>Steps:</h4>
             <ol>
-              <li>打开您的 BTC 钱包（Xverse、Unisat 或 Leather）</li>
-              <li>发送 <strong>{amount} BTC</strong> 到上方地址</li>
-              <li>等待 1-3 个网络确认</li>
-              <li>点击"我已发送"按钮完成确认</li>
+              <li>Open your BTC wallet (Xverse, Unisat, or Leather)</li>
+              <li>Send <strong>{amount} BTC</strong> to the address above</li>
+              <li>Wait for 1-3 network confirmations</li>
+              <li>Click "I Have Sent BTC" to confirm</li>
             </ol>
           </div>
         )}
