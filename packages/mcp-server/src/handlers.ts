@@ -13,6 +13,7 @@ import { trustTools } from "./tools/trust-tools";
 import { marketplaceTools } from "./tools/marketplace-tools";
 import { verifyTools } from "./tools/verify-tools";
 import { cantonTools } from "./tools/canton-tools";
+import { btcTools } from "./tools/btc-tools";
 
 // ─── Config type (superset of all tool handler needs) ────────
 
@@ -57,6 +58,7 @@ const TRUST_TOOLS = ["discover_agents", "get_agent_reputation", "get_agent_valid
 const MARKETPLACE_TOOLS = ["search_marketplace", "hire_human", "get_wallet_balance", "execute_payment"];
 const VERIFY_TOOLS = ["check_nonce", "prove_intent", "verify_proof"];
 const CANTON_TOOLS = ["canton_health", "query_attestations", "query_settlements", "prepare_settlement"];
+const BTC_TOOLS = ["init_btc_payment", "confirm_btc_transfer", "get_btc_payment_status", "broadcast_btc_transaction", "request_btc_wallet"];
 
 // ─── Main routing function ───────────────────────────────────
 
@@ -85,6 +87,12 @@ export async function handleToolCall(
     result = await verifyTools.handle(name, args, config);
   } else if (CANTON_TOOLS.includes(name)) {
     result = await cantonTools.handle(name, args, config);
+  } else if (BTC_TOOLS.includes(name)) {
+    const out = await btcTools.handle(name, args, config);
+    result = out.result;
+    if (out.intent) {
+      intent = out.intent;
+    }
   } else {
     throw new Error(`Unknown tool: ${name}`);
   }

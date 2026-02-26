@@ -2,6 +2,8 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { ethers } from 'ethers';
 import { CHAIN_CONFIGS, DEFAULT_CHAIN } from './config';
 import { fetchBalances, fetchTools, sendChatMessage, executeChatIntent, ChatResponse, ExecuteResponse, ToolCallInfo, ToolDef } from './api';
+import { BTCWalletConnector, useBTCWallet, btcWalletStyles, sendBitcoinGlobal } from './btc-wallet';
+import { X402PaymentCard, BTCDepositCard, executeX402Payment, X402PaymentDetails, X402Intent, x402Styles } from './x402-payment';
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -24,8 +26,12 @@ interface WalletBalances {
 // ── Helpers ───────────────────────────────────────────────────
 
 function truncAddr(addr: string, len = 6): string {
-  if (addr.length <= len * 2 + 2) return addr;
-  return addr.slice(0, len + 2) + '...' + addr.slice(-len);
+  if(addr){
+    if (addr.length <= len * 2 + 2) return addr;
+    return addr.slice(0, len + 2) + '...' + addr.slice(-len);
+  } else {
+    return ''
+  }
 }
 
 let msgCounter = 0;
@@ -91,6 +97,26 @@ export default function App() {
   const [toolsProvider, setToolsProvider] = useState('');
   const [showTools, setShowTools] = useState(false);
 
+  // BTC Wallet
+  const [showBTCConnector, setShowBTCConnector] = useState(false);
+  const [btcWalletAddress, setBtcWalletAddress] = useState<string | null>(null);
+
+
+  // X402 Payment
+  const [x402Payment, setX402Payment] = useState<X402PaymentDetails | null>(null);
+  const [x402Intent, setX402Intent] = useState<X402Intent | null>(null);
+  const [payingX402, setPayingX402] = useState(false);
+
+  // BTC Deposit
+  const [btcDepositInfo, setBtcDepositInfo] = useState<{
+    depositAddress: string;
+    amount: string;
+    suiAddress: string;
+    intentId: string;
+  } | null>(null);
+  const [confirmingBTC, setConfirmingBTC] = useState(false);
+  const [signingBTC, setSigningBTC] = useState(false);
+
   // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -120,6 +146,56 @@ export default function App() {
     try {
       const response = await sendChatMessage(msg, address, sessionId, selectedChainKey);
       setSessionId(response.sessionId);
+
+      // Check if the response asks for BTC wallet connection via intent
+      const isRequestBTCWallet = response.intent?.type === 'REQUEST_BTC_WALLET' ||
+                                 (response.intent as any)?.requiresBTCWallet;
+      // if (isRequestBTCWallet && !btcWalletAddress) {
+      console.log('isRequestBTCWallet==>>', response)
+      console.log('isRequestBTCWallet==>>', isRequestBTCWallet)
+      if (isRequestBTCWallet) {
+        setShowBTCConnector(true);
+      }
+
+      // Check if x402 payment is required
+      if (response.intent?.type === 'BTC_STAKE_PAYMENT_REQUIRED') {
+        const intent = response.intent as any;
+        setX402Payment({
+          amount: intent.paymentAmount,
+          amountDisplay: `$${(parseInt(intent.paymentAmount) / 1000000).toFixed(2)}`,
+          asset: intent.paymentAsset,
+          payTo: intent.payTo,
+          network: 'base',
+          description: '获取 BTC 质押地址',
+          maxTimeoutSeconds: 60,
+          resource: 'https://mcp-x402.vishwanetwork.xyz/api/bridge/sui/btc2btcvc',
+        });
+        setX402Intent(intent as X402Intent);
+      }
+
+      // Check if BTC deposit address is ready
+      // CORRECT ORDER: Only show deposit card AFTER BTC wallet is connected
+      if (response.intent?.type === 'BTC_STAKE' && response.intent.depositAddress) {
+        const intent = response.intent as any;
+        if (btcWalletAddress) {
+          // BTC wallet already connected - show deposit card
+          setBtcDepositInfo({
+            depositAddress: intent.depositAddress,
+            amount: intent.amount,
+            suiAddress: intent.suiAddress,
+            intentId: intent.reviewId || intent.intentId,
+          });
+        } else {
+          // BTC wallet not connected yet - show connector first
+          setShowBTCConnector(true);
+          // Store the deposit info temporarily
+          setMessages(prev => [...prev, {
+            id: nextId(),
+            role: 'system',
+            text: 'BTC 质押地址已生成。请先连接您的 BTC 钱包。',
+          }]);
+        }
+      }
 
       const assistantMsg: ChatMessage = {
         id: nextId(),
@@ -333,6 +409,226 @@ export default function App() {
     sendMessage("I changed my mind, let's not do that.");
   }, [sendMessage]);
 
+  // ── X402 Payment ──────────────────────────────────────────
+
+  const handleX402Pay = useCallback(async () => {
+    if (!signer || !x402Payment || !x402Intent) return;
+
+    setPayingX402(true);
+    try {
+      // Step 1: Generate EIP-712 signature for x402 payment (payai format)
+      const paymentResult = await executeX402Payment(signer, x402Payment);
+
+      setMessages(prev => [...prev, {
+        id: nextId(),
+        role: 'system',
+        text: `✓ 支付签名已生成，正在获取 BTC 质押地址...`,
+      }]);
+
+      // Step 2: Directly call the x402 endpoint with payment header (payai format)
+      const params = new URLSearchParams({
+        suiAddress: x402Intent.suiAddress,
+        amount: x402Intent.amount,
+        network: x402Intent.network,
+      });
+
+      const fullUrl = `https://mcp-x402.vishwanetwork.xyz/api/bridge/sui/btc2btcvc?${params}`;
+
+      console.log('[X402] Calling:', fullUrl);
+      console.log('[X402] Payment header:', paymentResult.paymentHeader.slice(0, 50) + '...');
+
+      const response = await fetch(fullUrl, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'X-PAYMENT': paymentResult.paymentHeader,
+        },
+      });
+
+      console.log('[X402] Response status:', response.status);
+
+      if (response.status === 402) {
+        const errorData = await response.json();
+        throw new Error(`支付未接受: ${errorData.error || '请检查签名和网络'}`);
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`获取 BTC 地址失败: ${response.status} - ${errorText}`);
+      }
+
+      const resultData = await response.json();
+      console.log('[X402] BTC deposit address received:', resultData);
+
+      // Check x-payment-response header for tx hash
+      const xPaymentResponse = response.headers.get('x-payment-response');
+      let txInfo = null;
+      if (xPaymentResponse) {
+        try {
+          txInfo = JSON.parse(atob(xPaymentResponse));
+        } catch (e) {
+          console.log('无法解析 x-payment-response');
+        }
+      }
+
+      // Add success message
+      setMessages(prev => [...prev, {
+        id: nextId(),
+        role: 'system',
+        text: `✓ BTC 质押地址已获取！交易哈希: ${txInfo?.transactionHash?.slice(0, 10) || 'N/A'}...`,
+      }]);
+
+      // Clear payment UI
+      setX402Payment(null);
+      setX402Intent(null);
+
+      // Step 3: Show BTC deposit card if we have the address
+      if (resultData.wallet || resultData.data?.wallet) {
+        const depositAddress = resultData.wallet || resultData.data?.wallet;
+        setBtcDepositInfo({
+          depositAddress,
+          amount: x402Intent.amount,
+          suiAddress: x402Intent.suiAddress,
+          intentId: x402Intent.intentId,
+        });
+      }
+
+    } catch (err: any) {
+      console.error('[X402 Payment] Error:', err);
+      setMessages(prev => [...prev, {
+        id: nextId(),
+        role: 'system',
+        text: `❌ 支付失败: ${err.message}`,
+      }]);
+    } finally {
+      setPayingX402(false);
+    }
+  }, [signer, x402Payment, x402Intent]);
+
+  const handleX402Cancel = useCallback(() => {
+    setX402Payment(null);
+    setX402Intent(null);
+    sendMessage("我暂时不想支付服务费");
+  }, [sendMessage]);
+
+  // ── BTC Deposit Confirmation ──────────────────────────────
+
+  const handleBTCDepositConfirm = useCallback(async () => {
+    if (!btcDepositInfo) return;
+
+    setConfirmingBTC(true);
+    try {
+      // Manual confirmation - user provides tx hash
+      const txHash = prompt("请输入您的 BTC 交易哈希 (txid):");
+
+      if (!txHash) {
+        setConfirmingBTC(false);
+        return;
+      }
+
+      // Send confirmation message
+      await sendMessage(
+        `我已发送 BTC，交易哈希是 ${txHash}，intent_id 是 ${btcDepositInfo.intentId}，请确认存款`,
+        true
+      );
+
+      // Clear deposit UI
+      setBtcDepositInfo(null);
+    } catch (err: any) {
+      setMessages(prev => [...prev, {
+        id: nextId(),
+        role: 'system',
+        text: `确认失败: ${err.message}`,
+      }]);
+    } finally {
+      setConfirmingBTC(false);
+    }
+  }, [btcDepositInfo, sendMessage]);
+
+  // ── BTC Sign and Send ─────────────────────────────────────
+
+  const handleBTCSignAndSend = useCallback(async () => {
+    if (!btcDepositInfo || !btcWalletAddress) return;
+
+    setSigningBTC(true);
+    try {
+      // Convert BTC amount to satoshis
+      const amountInSatoshi = Math.floor(parseFloat(btcDepositInfo.amount) * 100000000);
+
+      // Call wallet to sign and send (using global function)
+      const txid = await sendBitcoinGlobal(btcDepositInfo.depositAddress, amountInSatoshi);
+
+      // Add success message
+      setMessages(prev => [...prev, {
+        id: nextId(),
+        role: 'system',
+        text: `✓ BTC 交易已广播！交易哈希: ${txid.slice(0, 10)}...`,
+      }]);
+
+      // Send confirmation to backend
+      await sendMessage(
+        `我已发送 BTC，交易哈希是 ${txid}，intent_id 是 ${btcDepositInfo.intentId}，请确认存款`,
+        true
+      );
+
+      // Clear deposit UI
+      setBtcDepositInfo(null);
+    } catch (err: any) {
+      console.error('[BTC Sign] Error:', err);
+      setMessages(prev => [...prev, {
+        id: nextId(),
+        role: 'system',
+        text: `❌ BTC 交易失败: ${err.message}`,
+      }]);
+    } finally {
+      setSigningBTC(false);
+    }
+  }, [btcDepositInfo, btcWalletAddress, sendMessage]);
+
+  // ── BTC Wallet Connection ─────────────────────────────────
+
+  const handleBTCConnect = useCallback(async (btcAddress: string, walletType: string) => {
+    setBtcWalletAddress(btcAddress);
+    setShowBTCConnector(false);
+
+    // Notify the chat that BTC wallet is connected
+    setMessages(prev => [...prev, {
+      id: nextId(),
+      role: 'system',
+      text: `✓ BTC 钱包已连接: ${btcAddress.slice(0, 10)}...${btcAddress.slice(-8)} (${walletType})`,
+    }]);
+
+    // Check if we already have a BTC deposit address pending
+    // This handles the case where init_btc_payment already returned the address
+    const pendingDeposit = messages.find(m =>
+      m.intent?.type === 'BTC_STAKE' && m.intent.depositAddress
+    );
+
+    if (pendingDeposit && pendingDeposit.intent) {
+      // We have the deposit address - show deposit card immediately
+      const intent = pendingDeposit.intent as any;
+      setBtcDepositInfo({
+        depositAddress: intent.depositAddress,
+        amount: intent.amount,
+        suiAddress: intent.suiAddress,
+        intentId: intent.reviewId || intent.intentId,
+      });
+      setMessages(prev => [...prev, {
+        id: nextId(),
+        role: 'system',
+        text: '现在您可以从已连接的 BTC 钱包发送 BTC 到质押地址。',
+      }]);
+    } else {
+      // Need to get the deposit address
+      await sendMessage(`我已连接BTC钱包，地址是 ${btcAddress}，请获取BTC质押地址`, false);
+    }
+  }, [sendMessage, messages]);
+
+  const handleBTCCancel = useCallback(() => {
+    setShowBTCConnector(false);
+    sendMessage("我暂时不想连接BTC钱包");
+  }, [sendMessage]);
+
   // ── Key handler ───────────────────────────────────────────
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -374,13 +670,13 @@ export default function App() {
                 ))}
               </select>
             </div>
-            {connected && toolDefs.length > 0 && (
+            {connected && toolDefs && toolDefs.length > 0 && (
               <button
                 className="tools-toggle"
                 onClick={() => setShowTools(v => !v)}
                 title="View MCP Tools"
               >
-                {showTools ? 'Hide Tools' : `Tools (${toolDefs.length})`}
+                {showTools ? 'Hide Tools' : `Tools (${toolDefs?.length || 0})`}
               </button>
             )}
             {connected && balances && (
@@ -416,7 +712,7 @@ export default function App() {
       )}
 
       {/* Tools Panel */}
-      {showTools && toolDefs.length > 0 && (
+            {showTools && toolDefs && toolDefs.length > 0 && (
         <div className="tools-panel fade-in">
           <div className="tools-panel-header">
             <span className="tools-panel-title">MCP Tools</span>
@@ -427,7 +723,7 @@ export default function App() {
               <div key={t.name} className="tools-panel-item">
                 <div className="tools-panel-name">{t.name}</div>
                 <div className="tools-panel-desc">{t.description}</div>
-                {t.parameters.length > 0 && (
+                {t.parameters && t.parameters.length > 0 && (
                   <div className="tools-panel-params">
                     {t.parameters.map(p => (
                       <span key={p.name} className="tools-panel-param">
@@ -461,75 +757,69 @@ export default function App() {
                   )}
 
                   {/* MCP Tool Calls */}
-                  {msg.toolCalls && msg.toolCalls.length > 0 && (
-                    <div className="tool-calls-card fade-in">
-                      <div className="tool-calls-header">
-                        <div className="tool-calls-dots">
-                          {[0, 1, 2].map(i => <span key={i} className="tool-calls-dot" />)}
-                        </div>
-                        <span className="tool-calls-label">MCP TOOL CALLS</span>
-                      </div>
-                      <div className="tool-calls-body">
-                        {msg.toolCalls.map((tc, i) => (
-                          <div key={i} className="tool-call-row">
-                            <div className="tool-call-indicator">
-                              <span className="tool-call-check">&#10003;</span>
-                            </div>
-                            <div className="tool-call-info">
-                              <div className="tool-call-name">{tc.tool}</div>
-                              <div className="tool-call-args">
-                                {Object.entries(tc.args).map(([k, v]) => (
-                                  <span key={k} className="tool-call-arg">
-                                    {k}: {typeof v === 'string' ? v : JSON.stringify(v)}
-                                  </span>
-                                ))}
-                              </div>
-                              <div className="tool-call-timing">{tc.durationMs}ms</div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                  {/*{msg.toolCalls && msg.toolCalls.length > 0 && (*/}
+                  {/*  <div className="tool-calls-card fade-in">*/}
+                  {/*    <div className="tool-calls-header">*/}
+                  {/*      <div className="tool-calls-dots">*/}
+                  {/*        {[0, 1, 2].map(i => <span key={i} className="tool-calls-dot" />)}*/}
+                  {/*      </div>*/}
+                  {/*      <span className="tool-calls-label">MCP TOOL CALLS</span>*/}
+                  {/*    </div>*/}
+                  {/*    <div className="tool-calls-body">*/}
+                  {/*      {msg.toolCalls.map((tc, i) => (*/}
+                  {/*        <div key={i} className="tool-call-row">*/}
+                  {/*          <div className="tool-call-indicator">*/}
+                  {/*            <span className="tool-call-check">&#10003;</span>*/}
+                  {/*          </div>*/}
+                  {/*          <div className="tool-call-info">*/}
+                  {/*            <div className="tool-call-name">{tc.tool}</div>*/}
+                  {/*            <div className="tool-call-args">*/}
+                  {/*              {Object.entries(tc.args).map(([k, v]) => (*/}
+                  {/*                <span key={k} className="tool-call-arg">*/}
+                  {/*                  {k}: {typeof v === 'string' ? v : JSON.stringify(v)}*/}
+                  {/*                </span>*/}
+                  {/*              ))}*/}
+                  {/*            </div>*/}
+                  {/*            <div className="tool-call-timing">{tc.durationMs}ms</div>*/}
+                  {/*          </div>*/}
+                  {/*        </div>*/}
+                  {/*      ))}*/}
+                  {/*    </div>*/}
+                  {/*  </div>*/}
+                  {/*)}*/}
 
-                  {/* Intent approval card */}
-                  {msg.intent && msg.execStep === undefined && (
+
+                  {/* X402 */}
+                  {msg.intent && msg.intent.type == 'BTC_STAKE_PAYMENT_REQUIRED' && (
                     <div className="intent-card fade-in">
                       <div className="intent-header">
                         <div className="intent-dots">
                           {[0, 1, 2].map(i => <span key={i} className="intent-dot" />)}
                         </div>
-                        <span className="intent-label">PAYMENT INTENT</span>
+                        <span className="intent-label">BTC Deposit</span>
                       </div>
                       <div className="intent-body">
                         <div className="intent-row">
-                          <span className="intent-key">Hire</span>
-                          <span className="intent-val">{msg.intent.humanName}</span>
+                          <span className="intent-key">To</span>
+                          <span
+                            className="intent-val mono">{x402Payment?.payTo.slice(0, 8)}...{x402Payment?.payTo.slice(-6)}</span>
                         </div>
                         <div className="intent-row">
-                          <span className="intent-key">Task</span>
-                          <span className="intent-val">{msg.intent.task}</span>
+                          <span className="intent-key">Network</span>
+                          <span className="intent-val mono">Base</span>
                         </div>
                         <div className="intent-row">
                           <span className="intent-key">Amount</span>
-                          <span className="intent-val intent-amount">{msg.intent.amount} USDC</span>
-                        </div>
-                        <div className="intent-row">
-                          <span className="intent-key">To</span>
-                          <span className="intent-val mono">{truncAddr(msg.intent.recipient)}</span>
-                        </div>
-                        <div className="intent-row">
-                          <span className="intent-key">Expires</span>
-                          <span className="intent-val mono">{new Date(msg.intent.expiry * 1000).toLocaleTimeString()}</span>
+                          <span className="intent-val mono">{x402Payment?.amountDisplay}</span>
                         </div>
                       </div>
                       <div className="intent-actions">
-                        <button className="btn btn-sm" onClick={() => handleDecline(msg.id)}>
+                        <button className="btn btn-sm" onClick={() => handleX402Cancel()}>
                           Decline
                         </button>
                         <button
                           className="btn btn-primary btn-sm"
-                          onClick={() => handleApprove(msg.id, msg.intent!)}
+                          onClick={() => handleX402Pay()}
                         >
                           Sign & Pay
                         </button>
@@ -537,42 +827,88 @@ export default function App() {
                     </div>
                   )}
 
+
+                  {/*/!* Intent approval card *!/*/}
+                  {/*{msg.intent && msg.execStep === undefined && (*/}
+                  {/*  <div className="intent-card fade-in">*/}
+                  {/*    <div className="intent-header">*/}
+                  {/*      <div className="intent-dots">*/}
+                  {/*        {[0, 1, 2].map(i => <span key={i} className="intent-dot" />)}*/}
+                  {/*      </div>*/}
+                  {/*      <span className="intent-label">PAYMENT INTENT</span>*/}
+                  {/*    </div>*/}
+                  {/*    <div className="intent-body">*/}
+                  {/*      <div className="intent-row">*/}
+                  {/*        <span className="intent-key">Hire</span>*/}
+                  {/*        <span className="intent-val">{msg.intent.humanName}</span>*/}
+                  {/*      </div>*/}
+                  {/*      <div className="intent-row">*/}
+                  {/*        <span className="intent-key">Task</span>*/}
+                  {/*        <span className="intent-val">{msg.intent.task}</span>*/}
+                  {/*      </div>*/}
+                  {/*      <div className="intent-row">*/}
+                  {/*        <span className="intent-key">Amount</span>*/}
+                  {/*        <span className="intent-val intent-amount">{msg.intent.amount} USDC</span>*/}
+                  {/*      </div>*/}
+                  {/*      <div className="intent-row">*/}
+                  {/*        <span className="intent-key">To</span>*/}
+                  {/*        <span className="intent-val mono">{truncAddr(msg.intent.recipient)}</span>*/}
+                  {/*      </div>*/}
+                  {/*      <div className="intent-row">*/}
+                  {/*        <span className="intent-key">Expires</span>*/}
+                  {/*        <span className="intent-val mono">{new Date(msg.intent.expiry * 1000).toLocaleTimeString()}</span>*/}
+                  {/*      </div>*/}
+                  {/*    </div>*/}
+                  {/*    <div className="intent-actions">*/}
+                  {/*      <button className="btn btn-sm" onClick={() => handleDecline(msg.id)}>*/}
+                  {/*        Decline*/}
+                  {/*      </button>*/}
+                  {/*      <button*/}
+                  {/*        className="btn btn-primary btn-sm"*/}
+                  {/*        onClick={() => handleApprove(msg.id, msg.intent!)}*/}
+                  {/*      >*/}
+                  {/*        Sign & Pay*/}
+                  {/*      </button>*/}
+                  {/*    </div>*/}
+                  {/*  </div>*/}
+                  {/*)}*/}
+
                   {/* ZK Verification Log */}
-                  {msg.execStep !== undefined && (
-                    <div className="exec-log fade-in">
-                      <div className="exec-log-header">
-                        <div className="exec-log-dots">
-                          {[0, 1, 2].map(i => <span key={i} className="exec-log-dot" />)}
-                        </div>
-                        <span className="exec-log-label">EXECUTION LOG (PENDING)</span>
-                      </div>
-                      <div className="exec-log-body">
-                        {EXEC_STEPS.map((step, i) => (
-                          <div key={i} className={`exec-log-row ${
-                            i < msg.execStep! ? 'done' :
-                            i === msg.execStep! ? 'active' : 'pending'
-                          }`}>
-                            <div className="exec-log-indicator">
-                              {i < msg.execStep! ? (
-                                <span className="exec-log-check">&#10003;</span>
-                              ) : i === msg.execStep! ? (
-                                <span className="exec-log-spinner" />
-                              ) : (
-                                <span className="exec-log-circle" />
-                              )}
-                            </div>
-                            <div className="exec-log-info">
-                              <div className="exec-log-step-label">{step.label}</div>
-                              <div className="exec-log-step-desc">
-                                {i < msg.execStep! ? 'Completed' :
-                                  i === msg.execStep! ? step.desc : 'Waiting...'}
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                  {/*{msg.execStep !== undefined && (*/}
+                  {/*  <div className="exec-log fade-in">*/}
+                  {/*    <div className="exec-log-header">*/}
+                  {/*      <div className="exec-log-dots">*/}
+                  {/*        {[0, 1, 2].map(i => <span key={i} className="exec-log-dot" />)}*/}
+                  {/*      </div>*/}
+                  {/*      <span className="exec-log-label">EXECUTION LOG (PENDING)</span>*/}
+                  {/*    </div>*/}
+                  {/*    <div className="exec-log-body">*/}
+                  {/*      {EXEC_STEPS.map((step, i) => (*/}
+                  {/*        <div key={i} className={`exec-log-row ${*/}
+                  {/*          i < msg.execStep! ? 'done' :*/}
+                  {/*          i === msg.execStep! ? 'active' : 'pending'*/}
+                  {/*        }`}>*/}
+                  {/*          <div className="exec-log-indicator">*/}
+                  {/*            {i < msg.execStep! ? (*/}
+                  {/*              <span className="exec-log-check">&#10003;</span>*/}
+                  {/*            ) : i === msg.execStep! ? (*/}
+                  {/*              <span className="exec-log-spinner" />*/}
+                  {/*            ) : (*/}
+                  {/*              <span className="exec-log-circle" />*/}
+                  {/*            )}*/}
+                  {/*          </div>*/}
+                  {/*          <div className="exec-log-info">*/}
+                  {/*            <div className="exec-log-step-label">{step.label}</div>*/}
+                  {/*            <div className="exec-log-step-desc">*/}
+                  {/*              {i < msg.execStep! ? 'Completed' :*/}
+                  {/*                i === msg.execStep! ? step.desc : 'Waiting...'}*/}
+                  {/*            </div>*/}
+                  {/*          </div>*/}
+                  {/*        </div>*/}
+                  {/*      ))}*/}
+                  {/*    </div>*/}
+                  {/*  </div>*/}
+                  {/*)}*/}
 
                   {/* Actual execution steps (from backend) */}
                   {msg.txResult?.steps && (
@@ -687,6 +1023,36 @@ export default function App() {
               </div>
             )}
 
+            {/* X402 Payment Card */}
+            {/*{x402Payment && x402Intent && (*/}
+            {/*  <div className="message message-system fade-in">*/}
+            {/*    <X402PaymentCard*/}
+            {/*      payment={x402Payment}*/}
+            {/*      intent={x402Intent}*/}
+            {/*      onPay={handleX402Pay}*/}
+            {/*      onCancel={handleX402Cancel}*/}
+            {/*      paying={payingX402}*/}
+            {/*    />*/}
+            {/*  </div>*/}
+            {/*)}*/}
+
+            {/* BTC Deposit Card */}
+            {btcDepositInfo && (
+              <div className="message message-system fade-in">
+                <BTCDepositCard
+                  depositAddress={btcDepositInfo.depositAddress}
+                  amount={btcDepositInfo.amount}
+                  suiAddress={btcDepositInfo.suiAddress}
+                  fromAddress={btcWalletAddress || undefined}
+                  onConfirm={handleBTCDepositConfirm}
+                  onSignAndSend={btcWalletAddress ? handleBTCSignAndSend : undefined}
+                  confirming={confirmingBTC}
+                  signing={signingBTC}
+                  btcWalletConnected={!!btcWalletAddress}
+                />
+              </div>
+            )}
+
             <div ref={messagesEndRef} />
           </div>
 
@@ -722,6 +1088,16 @@ export default function App() {
         </div>
       )}
 
+      {/* BTC Wallet Connector Modal */}
+      {showBTCConnector && (
+        <BTCWalletConnector
+          onConnect={handleBTCConnect}
+          onCancel={handleBTCCancel}
+          title="连接BTC钱包"
+          description="请连接您的BTC钱包以完成质押流程。您将使用此钱包发送BTC到质押地址。"
+        />
+      )}
+
       {/* Footer */}
       <footer className="footer">
         <span className="footer-text">Verified Agent Execution Bundle</span>
@@ -730,6 +1106,12 @@ export default function App() {
           <a href="https://github.com/vishwanetwork/VAEB" target="_blank" rel="noopener noreferrer">GitHub</a>
         </div>
       </footer>
+
+      {/* BTC Wallet Styles */}
+      <style>{btcWalletStyles}</style>
+
+      {/* X402 Payment Styles */}
+      <style>{x402Styles}</style>
     </div>
   );
 }

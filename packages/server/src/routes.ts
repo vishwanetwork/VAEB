@@ -56,11 +56,16 @@ router.get('/balances/:address', async (req: Request, res: Response) => {
     const provider = getProviderForChain(chain);
     const usdc = getUsdcContractForChain(chain);
 
-    const [userEth, userUsdc, agentEth, agentUsdc] = await Promise.all([
+    // const [userEth, userUsdc, agentEth, agentUsdc] = await Promise.all([
+    //   provider.getBalance(address),
+    //   usdc.balanceOf(address),
+    //   provider.getBalance(chain.contracts.AgentWallet),
+    //   usdc.balanceOf(chain.contracts.AgentWallet),
+    // ]);
+
+    const [userEth, userUsdc] = await Promise.all([
       provider.getBalance(address),
-      usdc.balanceOf(address),
-      provider.getBalance(chain.contracts.AgentWallet),
-      usdc.balanceOf(chain.contracts.AgentWallet),
+      usdc.balanceOf(address)
     ]);
 
     res.json({
@@ -71,11 +76,11 @@ router.get('/balances/:address', async (req: Request, res: Response) => {
         eth: ethers.formatEther(userEth),
         usdc: ethers.formatUnits(userUsdc, 6),
       },
-      agent: {
-        address: chain.contracts.AgentWallet,
-        eth: ethers.formatEther(agentEth),
-        usdc: ethers.formatUnits(agentUsdc, 6),
-      },
+      // agent: {
+      //   address: chain.contracts.AgentWallet,
+      //   eth: ethers.formatEther(agentEth),
+      //   usdc: ethers.formatUnits(agentUsdc, 6),
+      // },
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

@@ -14,6 +14,7 @@ import { walletTools } from "./tools/wallet-tools";
 import { trustTools } from "./tools/trust-tools";
 import { marketplaceTools } from "./tools/marketplace-tools";
 import { verifyTools } from "./tools/verify-tools";
+import { btcTools } from "./tools/btc-tools";
 import { getToolDefinitions } from "./tool-registry";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -104,6 +105,11 @@ async function routeTool(name: string, args: Record<string, unknown>) {
   if (["prove_intent", "verify_proof"].includes(name)) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return await verifyTools.handle(name, args as any, config as any);
+  }
+  if (["init_btc_payment", "confirm_btc_transfer", "get_btc_payment_status", "broadcast_btc_transaction", "request_btc_wallet"].includes(name)) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const out = await btcTools.handle(name, args as any, config as any);
+    return out.result;
   }
   throw new Error(`Unknown tool: ${name}`);
 }

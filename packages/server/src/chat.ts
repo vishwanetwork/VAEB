@@ -422,6 +422,10 @@ DECISION GUIDE — pick the right tool for the user's request:
 "Send 50 USDC to 0xABC" / "Swap ETH for USDC" / "Transfer tokens"
   → use eip 8150 intents: first check balance, then check nonce, then create_intent, optionally simulate_intent, then execute_payment after signing
 
+"我想质押BTC" / "我想获得BTCVC" / "Stake BTC" / "质押比特币"
+  → BTC STAKING FLOW: 询问sui地址和金额 → init_btc_payment (从x402获取BTC存款地址) → 用户从外部BTC钱包转账 → confirm_btc_transfer
+  → IMPORTANT: 不要检查钱包余额！BTC来自用户外部钱包，不是连接的EVM钱包
+
 "What's my balance?" / "How much USDC do I have?"
   → get_wallet_balance (for AgentWallet) or read_balance (for any wallet/token)
 
@@ -455,6 +459,9 @@ DECISION GUIDE — pick the right tool for the user's request:
 "Verify this proof"
   → verify_proof
 
+"Check BTC transfer status" / "Where is my Bitcoin transaction?"
+  → get_btc_payment_status
+
 IMPORTANT: NEVER execute a transaction directly. ALL on-chain actions MUST go through the full intent pipeline: create_intent → check balance → check_nonce → prove_intent → verify_proof → user signs → execute_payment.
 
 MARKETPLACE FLOW (hiring humans for physical tasks):
@@ -479,6 +486,41 @@ EXECUTION PIPELINE (required for ALL on-chain transactions):
 4. User approves USDC spending (ERC-20 approve) for the AgentWallet, then signs ZKIntent(nonce, expiry, commitment) via EIP-712.
 5. execute_payment — submits executeWithProof() on-chain: re-checks nonce, verifies the ZK proof, recovers the signer from the EIP-712 signature, and atomically executes transferFrom calls.
 
+BTC STAKING FLOW (BTC -> BTCVC on Sui) — CORRECT ORDER:
+When user says "我想质押BTC获得BTCVC" or similar:
+
+**STEP 1 — Collect Information:**
+- Ask user: "您希望质押多少BTC？" (e.g., 0.001 BTC)
+- Ask user: "请提供您的Sui地址来接收BTCVC" (format: 0x + 64 hex chars)
+
+**STEP 2 — Initialize & Pay x402 (FIRST):**
+- Call init_btc_payment with: amount_btc + sui_address
+- **CRITICAL**: This will trigger x402 payment UI to pop up automatically
+- User pays $0.5 USDC using their connected EVM wallet (one-click payment)
+- Wait for payment to complete
+
+**STEP 3 — Connect BTC Wallet (AFTER payment):**
+- Once x402 payment succeeds, call request_btc_wallet
+- This triggers BTC wallet connection modal (Xverse, Unisat, Leather)
+- Tell user: "请连接您的BTC钱包以发送BTC存款"
+- Wait for BTC wallet to be connected
+
+**STEP 4 — BTC Deposit:**
+- Once BTC wallet connected and BTC deposit address obtained: 
+- Display: "请发送 [amount] BTC 到: [deposit_address]"
+- User sends BTC from their connected BTC wallet
+- Wait for user to confirm BTC sent
+
+**STEP 5 — Confirm:**
+- Call confirm_btc_transfer with intent_id + tx_hash
+- BTCVC will be minted to Sui address
+
+**CRITICAL RULES:**
+- CORRECT ORDER: (1) Pay x402 FIRST, (2) Connect BTC wallet SECOND, (3) Send BTC LAST
+- The frontend will AUTOMATICALLY show payment/connect UI cards - do NOT tell user to "look for buttons" or "manually do anything"
+- NEVER check wallet balances
+- When x402 payment succeeds, the system will automatically continue to BTC wallet connection
+
 TRUST FLOW (evaluating agents):
 1. User asks about agents → call discover_agents to find available agents.
 2. For details on a specific agent → get_agent_reputation + get_agent_validations.
@@ -490,7 +532,8 @@ RULES:
 - ALWAYS use the right tool — never make up data or balances
 - Treat all USDC as real USDC — never mention "mock", "test", or "fake"
 - Do NOT call get_wallet_balance unless the user specifically asks about balance
-- When unsure which flow, ask the user to clarify`;
+- When unsure which flow, ask the user to clarify
+- **BTC STAKING RULE**: When user wants to stake BTC for BTCVC: (1) Collect amount and sui_address, (2) Call request_btc_wallet to trigger wallet connection UI, (3) Wait for user to confirm connection, (4) Then call init_btc_payment. DO NOT check wallet balances. BTC comes from EXTERNAL wallet. CRITICAL: NEVER tell user to "look for button" or "manually pay" - the frontend will AUTOMATICALLY show the payment/deposit UI cards with buttons after you call the tools.`;
 
 // ─── Tool Call Info (returned to frontend) ───────────────────
 
@@ -577,6 +620,16 @@ router.post('/chat', async (req: Request, res: Response) => {
           // Capture intent if produced (hire_human)
           if (mcpResult.intent) {
             intent = mcpResult.intent;
+          }
+
+          // Check if this is a request_btc_wallet call to trigger frontend UI
+          if (toolCall.function.name === 'request_btc_wallet' && mcpResult.result?.action === 'request_btc_wallet_connection') {
+            intent = {
+              ...mcpResult.intent,
+              type: 'REQUEST_BTC_WALLET',
+              suiAddress: args.sui_address,
+              reason: args.reason || 'BTC staking',
+            };
           }
 
           resultText =
