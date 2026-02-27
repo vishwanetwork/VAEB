@@ -58,6 +58,16 @@ const X402_BRIDGE_ENDPOINT = "https://mcp-x402.vishwanetwork.xyz/api/bridge/sui/
 const BTC_TESTNET_API = "https://mempool.space/testnet/api";
 const BTC_MAINNET_API = "https://mempool.space/api";
 
+// Timeout for external HTTP calls (bridge, mempool)
+const FETCH_TIMEOUT_MS = 30_000;
+
+/** fetch with AbortController timeout */
+function fetchWithTimeout(url: string, init?: RequestInit, timeoutMs = FETCH_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 // USDC contract on Base
 const USDC_CONTRACT_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 
@@ -154,7 +164,7 @@ async function handleInitBTCPayment(
         network: network,
       });
 
-      const response = await fetch(`${X402_BRIDGE_ENDPOINT}?${params}`, {
+      const response = await fetchWithTimeout(`${X402_BRIDGE_ENDPOINT}?${params}`, {
         method: "GET",
         headers: {
           "Accept": "application/json",
@@ -256,7 +266,7 @@ async function handleInitBTCPayment(
       network: network,
     });
 
-    const discoveryResponse = await fetch(`${X402_BRIDGE_ENDPOINT}?${params}`, {
+    const discoveryResponse = await fetchWithTimeout(`${X402_BRIDGE_ENDPOINT}?${params}`, {
       method: "GET",
       headers: {
         "Accept": "application/json",
@@ -470,7 +480,7 @@ async function handleConfirmBTCTransfer(
     try {
       const apiBase = intent.network === "mainnet" ? BTC_MAINNET_API : BTC_TESTNET_API;
 
-      const txResponse = await fetch(`${apiBase}/tx/${tx_hash}`);
+      const txResponse = await fetchWithTimeout(`${apiBase}/tx/${tx_hash}`);
 
       if (!txResponse.ok) {
         return {
@@ -560,7 +570,7 @@ async function handleBroadcastBTCTransaction(
   if (!intent && tx_hash) {
     try {
       const apiBase = network === "mainnet" ? BTC_MAINNET_API : BTC_TESTNET_API;
-      const txResponse = await fetch(`${apiBase}/tx/${tx_hash}`);
+      const txResponse = await fetchWithTimeout(`${apiBase}/tx/${tx_hash}`);
 
       if (!txResponse.ok) {
         return {
@@ -609,7 +619,7 @@ async function handleBroadcastBTCTransaction(
     try {
       const apiBase = intent.network === "mainnet" ? BTC_MAINNET_API : BTC_TESTNET_API;
 
-      const broadcastResponse = await fetch(`${apiBase}/tx`, {
+      const broadcastResponse = await fetchWithTimeout(`${apiBase}/tx`, {
         method: "POST",
         headers: { "Content-Type": "text/plain" },
         body: signed_tx,
@@ -690,7 +700,7 @@ async function handleGetBTCPaymentStatus(
   let blockchainStatus: { confirmed: boolean; confirmations: number; explorer_url: string } | null = null;
   if (intent.txHash) {
     try {
-      const txResponse = await fetch(`${apiBase}/tx/${intent.txHash}`);
+      const txResponse = await fetchWithTimeout(`${apiBase}/tx/${intent.txHash}`);
       if (txResponse.ok) {
         const txData = await txResponse.json() as TxData;
         blockchainStatus = {

@@ -9,6 +9,7 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:13002',
         changeOrigin: true,
+        timeout: 120000, // 2 min — bridge + LLM calls can be slow
       },
     },
   },
