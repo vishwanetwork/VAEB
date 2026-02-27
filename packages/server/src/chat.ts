@@ -539,6 +539,12 @@ router.post('/chat', async (req: Request, res: Response) => {
     }
     const history = conversationStore.get(sid)!;
 
+    // Validate history integrity - remove orphaned tool messages
+    while (history.length > 0 && (history[0] as any).role === 'tool') {
+      console.warn('[Chat] Removing orphaned tool message from history start');
+      history.shift();
+    }
+
     // Add user message
     history.push({ role: 'user', content: message });
 
@@ -657,9 +663,33 @@ router.post('/chat', async (req: Request, res: Response) => {
       history.push({ role: 'assistant', content: agentMessage });
     }
 
-    // Keep history manageable
+    // Keep history manageable - but preserve message integrity
+    // Don't cut off in the middle of tool call/response pairs
     if (history.length > 30) {
-      history.splice(0, history.length - 20);
+      // Find a safe point to truncate (after a complete exchange)
+      // Look for the first assistant message after index 5
+      let safeIndex = 0;
+      for (let i = 5; i < history.length - 20; i++) {
+        const msg = history[i] as any;
+        if (msg.role === 'assistant' && !msg.tool_calls) {
+          safeIndex = i + 1;
+          break;
+        }
+        if (msg.role === 'tool') {
+          // Skip tool responses, find the next safe point
+          safeIndex = i + 1;
+        }
+      }
+      if (safeIndex > 0) {
+        history.splice(0, safeIndex);
+      } else {
+        // Fallback: just keep last 20 messages
+        history.splice(0, history.length - 20);
+        // Clean up any orphaned tool messages at the start
+        while (history.length > 0 && (history[0] as any).role === 'tool') {
+          history.shift();
+        }
+      }
     }
 
     res.json({
