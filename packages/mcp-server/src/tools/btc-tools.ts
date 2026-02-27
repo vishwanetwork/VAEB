@@ -1,6 +1,6 @@
 /**
  * BTC Tools — Bitcoin staking to BTCVC on Sui via x402 payment protocol
- * 
+ *
  * This service requires x402 micropayment ($0.5 USDC on Base) to obtain
  * the BTC deposit address for staking.
  */
@@ -15,7 +15,6 @@ interface BTCPaymentIntent {
   amountBTC: string;
   amountSats: bigint;
   depositAddress?: string;
-  suiAddress: string;
   status: "initialized" | "awaiting_payment" | "awaiting_deposit" | "deposit_received" | "completed" | "failed" | "expired";
   txHash?: string;
   bridgePaymentId?: string;
@@ -79,8 +78,12 @@ export const btcTools = {
         return await handleGetBTCPaymentStatus(args, config);
       case "broadcast_btc_transaction":
         return await handleBroadcastBTCTransaction(args, config);
-      case "request_btc_wallet":
-        return await handleRequestBTCWallet(args, config);
+      case "connect_btc_wallet":
+        return await handleConnectBTCWallet(args, config);
+      case "send_btc_transfer":
+        return await handleSendBTCTransfer(args, config);
+      case "prepare_stake_btc":
+        return await handlePrepareStakeBTC(args, config);
       default:
         throw new Error(`Unknown BTC tool: ${name}`);
     }
@@ -91,9 +94,8 @@ export const btcTools = {
 // Step 1: Get x402 payment requirements and create intent
 
 async function handleInitBTCPayment(
-  args: { 
-    amount_btc: string; 
-    sui_address: string;
+  args: {
+    amount_btc: string;
     network?: "mainnet" | "testnet";
     expiry_minutes?: number;
     payer_address?: string;
@@ -102,14 +104,13 @@ async function handleInitBTCPayment(
   },
   config: MCPConfig
 ): Promise<{ result: any; intent?: any }> {
-  const { 
-    amount_btc, 
-    sui_address,
+  const {
+    amount_btc,
     network = "mainnet",
     expiry_minutes = 60,
     payer_address,
     payment_header,
-    intent_id: existingIntentId 
+    intent_id: existingIntentId
   } = args;
 
   // Validate amount
@@ -119,16 +120,6 @@ async function handleInitBTCPayment(
       result: {
         success: false,
         error: `Invalid BTC amount: ${amount_btc}`,
-      },
-    };
-  }
-
-  // Validate Sui address
-  if (!sui_address || !sui_address.match(/^0x[a-fA-F0-9]{64}$/)) {
-    return {
-      result: {
-        success: false,
-        error: `Invalid Sui address format. Expected: 0x followed by 64 hex characters`,
       },
     };
   }
@@ -157,9 +148,8 @@ async function handleInitBTCPayment(
     // Call the endpoint with payment header to get BTC deposit address
     try {
       console.log(`[BTC Bridge] Calling with payment header for intent: ${existingIntentId}`);
-      
+
       const params = new URLSearchParams({
-        suiAddress: sui_address,
         amount: amount_btc,
         network: network,
       });
@@ -206,7 +196,6 @@ async function handleInitBTCPayment(
             deposit_address: depositAddress,
             amount_btc,
             amount_sats: existingIntent.amountSats.toString(),
-            sui_address,
             network,
             status: "awaiting_deposit",
             expires_at: new Date(existingIntent.expiresAt * 1000).toISOString(),
@@ -214,7 +203,7 @@ async function handleInitBTCPayment(
             instructions: {
               step1: `Send ${amount_btc} BTC to: ${depositAddress}`,
               step2: "Wait for Bitcoin network confirmation",
-              step3: "Provide the transaction hash to confirm",
+              step3: "Waiting for the mint of the token",
             },
           },
           intent: {
@@ -222,7 +211,6 @@ async function handleInitBTCPayment(
             type: "BTC_STAKE",
             depositAddress: depositAddress,
             amount: amount_btc,
-            suiAddress: sui_address,
             network,
             bridgePaymentId: paymentId,
             expiresAt: existingIntent.expiresAt,
@@ -253,7 +241,6 @@ async function handleInitBTCPayment(
     id: intentId,
     amountBTC: amount_btc,
     amountSats,
-    suiAddress: sui_address,
     status: "initialized",
     createdAt: now,
     expiresAt,
@@ -265,7 +252,6 @@ async function handleInitBTCPayment(
 
     // Step 1: Call GET endpoint to get x402 payment requirements
     const params = new URLSearchParams({
-      suiAddress: sui_address,
       amount: amount_btc,
       network: network,
     });
@@ -297,12 +283,12 @@ async function handleInitBTCPayment(
           extra: { name: string; version: string };
         }>;
       };
-      
+
       console.log(`[BTC Bridge] x402 payment required:`, JSON.stringify(responseBody, null, 2));
 
       if (responseBody.x402Version === 1 && responseBody.accepts) {
         const requirement = responseBody.accepts[0];
-        
+
         intent.x402Payment = {
           version: responseBody.x402Version,
           scheme: requirement.scheme,
@@ -329,7 +315,6 @@ async function handleInitBTCPayment(
             intent_id: intentId,
             amount_btc,
             amount_sats: amountSats.toString(),
-            sui_address,
             network,
             status: "awaiting_payment",
             expires_at: new Date(expiresAt * 1000).toISOString(),
@@ -350,7 +335,6 @@ async function handleInitBTCPayment(
             reviewId: intentId,
             type: "BTC_STAKE_PAYMENT_REQUIRED",
             amount: amount_btc,
-            suiAddress: sui_address,
             network,
             requiresPayment: true,
             paymentAmount: requirement.maxAmountRequired,
@@ -378,7 +362,7 @@ async function handleInitBTCPayment(
         data?: { wallet?: string };
         paymentId?: string;
       };
-      
+
       if (responseData.wallet || responseData.data?.wallet) {
         const depositAddress = responseData.wallet || responseData.data?.wallet;
         const paymentId = responseData.paymentId || intentId;
@@ -396,7 +380,6 @@ async function handleInitBTCPayment(
             deposit_address: depositAddress,
             amount_btc,
             amount_sats: amountSats.toString(),
-            sui_address,
             network,
             status: "awaiting_deposit",
             expires_at: new Date(expiresAt * 1000).toISOString(),
@@ -409,7 +392,6 @@ async function handleInitBTCPayment(
             type: "BTC_STAKE",
             depositAddress: depositAddress,
             amount: amount_btc,
-            suiAddress: sui_address,
             network,
             bridgePaymentId: paymentId,
             expiresAt,
@@ -444,8 +426,8 @@ async function handleInitBTCPayment(
 // ─── confirm_btc_transfer ────────────────────────────────────
 
 async function handleConfirmBTCTransfer(
-  args: { 
-    intent_id: string; 
+  args: {
+    intent_id: string;
     tx_hash?: string;
     signed_tx?: string;
   },
@@ -487,9 +469,9 @@ async function handleConfirmBTCTransfer(
   if (tx_hash) {
     try {
       const apiBase = intent.network === "mainnet" ? BTC_MAINNET_API : BTC_TESTNET_API;
-      
+
       const txResponse = await fetch(`${apiBase}/tx/${tx_hash}`);
-      
+
       if (!txResponse.ok) {
         return {
           result: {
@@ -500,12 +482,12 @@ async function handleConfirmBTCTransfer(
       }
 
       const txData = await txResponse.json() as TxData;
-      
+
       intent.txHash = tx_hash;
       intent.status = "deposit_received";
       btcPaymentStore.set(intent_id, intent);
 
-      const confirmationStatus = txData.status?.confirmed 
+      const confirmationStatus = txData.status?.confirmed
         ? (txData.status.block_height ? "confirmed" : "pending")
         : "pending";
 
@@ -520,7 +502,8 @@ async function handleConfirmBTCTransfer(
           network: intent.network,
           status: "deposit_received",
           explorer_url: `${apiBase}/tx/${tx_hash}`,
-          message: `Transaction confirmed. BTCVC will be minted to Sui address: ${intent.suiAddress}`,
+          message: `Transaction confirmed. BTCVC will be minted to the designated address.`,
+
           next_steps: `The backend will automatically process BTCVC distribution`,
         },
       };
@@ -535,10 +518,10 @@ async function handleConfirmBTCTransfer(
   }
 
   if (signed_tx) {
-    return handleBroadcastBTCTransaction({ 
-      intent_id, 
-      signed_tx, 
-      network: intent.network 
+    return handleBroadcastBTCTransaction({
+      intent_id,
+      signed_tx,
+      network: intent.network
     }, config);
   }
 
@@ -562,9 +545,9 @@ async function handleConfirmBTCTransfer(
 // ─── broadcast_btc_transaction ───────────────────────────────
 
 async function handleBroadcastBTCTransaction(
-  args: { 
-    intent_id: string; 
-    signed_tx?: string; 
+  args: {
+    intent_id: string;
+    signed_tx?: string;
     network?: "mainnet" | "testnet";
     tx_hash?: string;
   },
@@ -573,12 +556,12 @@ async function handleBroadcastBTCTransaction(
   const { intent_id, signed_tx, network = "testnet", tx_hash } = args;
 
   const intent = btcPaymentStore.get(intent_id);
-  
+
   if (!intent && tx_hash) {
     try {
       const apiBase = network === "mainnet" ? BTC_MAINNET_API : BTC_TESTNET_API;
       const txResponse = await fetch(`${apiBase}/tx/${tx_hash}`);
-      
+
       if (!txResponse.ok) {
         return {
           result: {
@@ -589,7 +572,7 @@ async function handleBroadcastBTCTransaction(
       }
 
       const txData = await txResponse.json() as TxData;
-      
+
       return {
         result: {
           success: true,
@@ -625,7 +608,7 @@ async function handleBroadcastBTCTransaction(
 
     try {
       const apiBase = intent.network === "mainnet" ? BTC_MAINNET_API : BTC_TESTNET_API;
-      
+
       const broadcastResponse = await fetch(`${apiBase}/tx`, {
         method: "POST",
         headers: { "Content-Type": "text/plain" },
@@ -728,7 +711,6 @@ async function handleGetBTCPaymentStatus(
       status: intent.status,
       is_expired: isExpired,
       deposit_address: intent.depositAddress,
-      sui_address: intent.suiAddress,
       amount_btc: intent.amountBTC,
       amount_sats: intent.amountSats.toString(),
       tx_hash: intent.txHash,
@@ -742,50 +724,187 @@ async function handleGetBTCPaymentStatus(
   };
 }
 
-// ─── request_btc_wallet ─────────────────────────────────────
-
-async function handleRequestBTCWallet(
-  args: { 
-    reason?: string;
-    sui_address?: string;
-  },
-  _config: MCPConfig
-): Promise<{ result: any; intent?: any }> {
-  const { reason = "BTC staking", sui_address } = args;
-
-  return {
-    result: {
-      success: true,
-      action: "request_btc_wallet_connection",
-      reason,
-      sui_address,
-      message: `Please connect your BTC wallet for ${reason}.`,
-      instructions: {
-        step1: "Click the 'Connect BTC Wallet' button",
-        step2: "Select your BTC wallet (Xverse, Unisat, or Leather) in the popup",
-        step3: "Authorize the connection to continue",
-      },
-    },
-    intent: {
-      type: "REQUEST_BTC_WALLET",
-      reason,
-      suiAddress: sui_address,
-      requiresBTCWallet: true,
-    },
-  };
-}
-
 // ─── Helper Functions ────────────────────────────────────────
 
 function isValidBTCAddress(address: string): boolean {
   if (!address || typeof address !== "string") return false;
-  
+
   if (address.match(/^(1|3)[a-zA-HJ-NP-Z0-9]{25,34}$/)) return true;
   if (address.match(/^bc1[a-z0-9]{39,59}$/i)) return true;
   if (address.match(/^(m|n|2)[a-zA-HJ-NP-Z0-9]{25,34}$/)) return true;
   if (address.match(/^tb1[a-z0-9]{39,59}$/i)) return true;
-  
+
   return false;
+}
+
+// ─── connect_btc_wallet ─────────────────────────────────────
+// Step 1: Connect BTC wallet and return address
+
+async function handleConnectBTCWallet(
+  args: {
+    wallet_type?: "xverse" | "unisat" | "leather";
+    reason?: string;
+  },
+  _config: MCPConfig
+): Promise<{ result: any; intent?: any }> {
+  const { wallet_type, reason = "BTC operations" } = args;
+
+  return {
+    result: {
+      success: true,
+      action: "connect_btc_wallet",
+      wallet_type: wallet_type || "any",
+      reason,
+      message: `Please connect your BTC wallet to continue with ${reason}.`,
+      supported_wallets: ["Xverse", "Unisat", "Leather"],
+      instructions: {
+        step1: wallet_type
+          ? `Select the ${wallet_type} wallet option`
+          : "Select your preferred BTC wallet from the popup",
+        step2: "Authorize the connection",
+        step3: "Your wallet address will be returned for verification",
+      },
+    },
+    intent: {
+      type: "CONNECT_BTC_WALLET",
+      walletType: wallet_type || "any",
+      reason,
+      requiresBTCWallet: true,
+      requiresConnection: true,
+    },
+  };
+}
+
+// ─── send_btc_transfer ──────────────────────────────────────
+// Step 2: Send BTC to a specified address (requires connected wallet)
+
+async function handleSendBTCTransfer(
+  args: {
+    to_address: string;
+    amount_btc: string;
+    from_address?: string;
+    wallet_type?: string;
+    memo?: string;
+    network?: "mainnet" | "testnet";
+  },
+  _config: MCPConfig
+): Promise<{ result: any; intent?: any }> {
+  const {
+    to_address,
+    amount_btc,
+    from_address,
+    wallet_type,
+    memo,
+    network = "testnet",
+  } = args;
+
+  // Validate BTC address
+  if (!isValidBTCAddress(to_address)) {
+    return {
+      result: {
+        success: false,
+        error: `Invalid BTC address: ${to_address}`,
+      },
+    };
+  }
+
+  // Validate amount
+  const amountNum = parseFloat(amount_btc);
+  if (isNaN(amountNum) || amountNum <= 0) {
+    return {
+      result: {
+        success: false,
+        error: `Invalid BTC amount: ${amount_btc}`,
+      },
+    };
+  }
+
+  // Convert to satoshis
+  const amountSats = BigInt(Math.floor(amountNum * 100000000));
+
+  // Check dust limit (typically 546 satoshis)
+  const DUST_LIMIT = 546;
+  if (amountSats < BigInt(DUST_LIMIT)) {
+    return {
+      result: {
+        success: false,
+        error: `Amount too small (${amountSats} satoshis). Minimum is ${DUST_LIMIT} satoshis (0.00000546 BTC).`,
+      },
+    };
+  }
+
+  return {
+    result: {
+      success: true,
+      action: "send_btc_transfer",
+      to_address,
+      amount_btc,
+      amount_sats: amountSats.toString(),
+      from_address,
+      network,
+      memo,
+      message: `Sending ${amount_btc} BTC to ${to_address}`,
+      instructions: {
+        step1: "Confirm the transaction in your BTC wallet",
+        step2: "Wait for the wallet to sign and broadcast",
+        step3: "Transaction hash will be returned upon success",
+      },
+    },
+    intent: {
+      type: "SEND_BTC_TRANSFER",
+      toAddress: to_address,
+      amount: amount_btc,
+      amountSats: amountSats.toString(),
+      fromAddress: from_address,
+      network,
+      memo,
+      requiresBTCWallet: true,
+      requiresSignature: true,
+    },
+  };
+}
+
+// ─── prepare_stake_btc ───────────────────────────────────────
+// Prepare BTC staking after x402 payment and wallet connection
+
+async function handlePrepareStakeBTC(
+  args: {
+    deposit_address: string;
+    amount: string;
+    intent_id: string;
+  },
+  _config: MCPConfig
+): Promise<{ result: any; intent?: any }> {
+  const { deposit_address, amount, intent_id } = args;
+
+  // Validate inputs
+  if (!deposit_address || !amount || !intent_id) {
+    return {
+      result: {
+        success: false,
+        error: "Missing required parameters: deposit_address, amount, or intent_id",
+      },
+    };
+  }
+
+  return {
+    result: {
+      success: true,
+      action: "stake_btc",
+      deposit_address,
+      amount,
+      intent_id,
+      message: `Ready to stake ${amount} BTC. Please confirm the transaction in your wallet.`,
+    },
+    intent: {
+      type: "STAKE_BTC",
+      depositAddress: deposit_address,
+      amount,
+      intentId: intent_id,
+      requiresBTCWallet: true,
+      requiresSignature: true,
+    },
+  };
 }
 
 // Export store for external access

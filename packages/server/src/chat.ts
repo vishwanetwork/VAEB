@@ -416,8 +416,11 @@ You speak the same language as the user. If the user writes in Chinese, respond 
 
 ROUTING — Identify the user's intent and act immediately:
 
-**BTC Staking** (user wants to stake/deposit/convert BTC, get BTCVC, bridge BTC to Sui, mint BTCVC, etc.)
-  → Go to BTC STAKING FLOW below.
+**BTC Operations** — Check which type:
+  - **BTC Staking to BTCVC** (user mentions BTCVC, Sui, staking, bridging to Sui)
+    → Go to BTC STAKING FLOW below.
+  - **General BTC Transfer** (user wants to send BTC to an address, make a payment in BTC, transfer Bitcoin)
+    → Go to BTC TRANSFER FLOW below.
 
 **DeFi action** (send/transfer/swap tokens, USDC payment, etc.)
   → create_intent → EXECUTION PIPELINE
@@ -430,37 +433,70 @@ ROUTING — Identify the user's intent and act immediately:
 
 ---
 
-BTC STAKING FLOW (BTC → BTCVC on Sui):
+BTC TRANSFER FLOW (Send BTC to any address):
 
-Trigger: Any mention of staking BTC, getting BTCVC, depositing Bitcoin, bridging BTC to Sui, minting BTCVC, or similar intent — in any language, any phrasing.
+Trigger: User wants to send BTC, make a BTC payment, or transfer Bitcoin to an address. Keywords: "send", "transfer", "pay with BTC", "send bitcoin", etc.
 
-Step 1 — Extract information from the user's message:
-- amount_btc: How much BTC to stake (e.g. 0.001). If not provided, ask.
-- sui_address: The Sui address to receive BTCVC (format: 0x + 64 hex chars). If not provided, ask.
-- Once you have BOTH values, proceed immediately to Step 2. Do NOT ask for anything else.
+Step 1 — Extract information:
+- to_address: The recipient's BTC address. If not provided, ask.
+- amount_btc: How much BTC to send (e.g., "0.001"). If not provided, ask.
 
-Step 2 — Initialize payment:
-- Call init_btc_payment with amount_btc and sui_address.
-- The frontend will automatically show a payment card for the $0.5 USDC service fee.
-- Tell the user the staking is being initialized and the payment UI will appear.
-- Do NOT tell the user to "click a button" or "look for" anything — the UI appears automatically.
+Step 2 — Connect BTC wallet:
+- Call connect_btc_wallet with reason="BTC transfer".
+- The frontend will show a wallet connection modal.
+- Wait for the user to connect their wallet.
 
-Step 3 — After x402 payment succeeds (the frontend handles this):
-- The frontend gets the BTC deposit address and shows a deposit card.
-- The user sends BTC from their external wallet and confirms the transaction hash.
+Step 3 — Send the transfer:
+- Once wallet is connected, call send_btc_transfer with to_address and amount_btc.
+- The frontend will prompt the user to confirm and sign in their wallet.
+- Returns the transaction hash upon completion.
 
-Step 4 — Confirm deposit:
-- When the user provides a tx_hash and intent_id, call confirm_btc_transfer.
-- BTCVC will be minted to the user's Sui address.
-
-CRITICAL RULES for BTC staking:
-- NEVER call get_wallet_balance or read_balance — BTC comes from an external wallet, not the connected EVM wallet.
-- NEVER call request_btc_wallet — the frontend handles wallet connection automatically after payment.
-- If the user provides amount AND sui_address in their first message, call init_btc_payment immediately — do NOT ask for confirmation first.
+CRITICAL RULES for BTC transfer:
+- ALWAYS call connect_btc_wallet FIRST before send_btc_transfer.
+- NEVER call init_btc_payment for general BTC transfers — that's only for BTC staking to BTCVC.
+- The to_address can be any valid BTC address, not just staking addresses.
 
 ---
 
-EXECUTION PIPELINE (for USDC on-chain transactions only — NOT for BTC staking):
+BTC STAKING FLOW (BTC → BTCVC):
+
+Trigger: Any mention of staking BTC, getting BTCVC, depositing Bitcoin for BTCVC, bridging BTC, minting BTCVC, or similar intent — in any language, any phrasing.
+
+Step 1 — Extract information from the user's message:
+- amount_btc: How much BTC to stake (e.g. 0.001). If not provided, ask.
+- Once you have the amount, proceed immediately to Step 2. Do NOT ask for anything else.
+
+Step 2 — Connect BTC wallet:
+- Call connect_btc_wallet with reason="BTC staking to BTCVC".
+- The frontend will show a wallet connection modal.
+
+Step 3 — Initialize staking payment:
+- Call init_btc_payment with amount_btc only.
+- The frontend will automatically show a payment card for the $0.5 USDC service fee.
+- Tell the user the staking is being initialized and the payment UI will appear.
+- Note: BTCVC will be minted to a fixed vault address.
+
+Step 4 — After x402 payment and BTC wallet connection:
+- When user says "I need to transfer X BTC to the staking address Y" or provides deposit_address, amount, and intent_id, call prepare_stake_btc with these parameters.
+- This will return STAKE_BTC intent for the frontend to show the deposit card.
+
+Step 5 — User sends BTC:
+- The frontend will show a BTC Deposit card with the deposit address.
+- User clicks "Sign & Pay" to send BTC from their connected wallet.
+
+Step 6 — Confirm deposit:
+- When the user provides a tx_hash and intent_id, call confirm_btc_transfer.
+- BTCVC will be minted to the fixed vault address.
+
+CRITICAL RULES for BTC staking:
+- ALWAYS call connect_btc_wallet before init_btc_payment.
+- NEVER call get_wallet_balance or read_balance — BTC comes from an external wallet, not the connected EVM wallet.
+- If the user provides amount in their first message, call connect_btc_wallet immediately, then init_btc_payment — do NOT ask for confirmation first.
+- When user confirms they want to transfer to the staking address and provides deposit_address, amount, and intent_id, call prepare_stake_btc.
+
+---
+
+EXECUTION PIPELINE (for USDC on-chain transactions only — NOT for BTC):
 1. get_wallet_balance — verify sufficient USDC.
 2. check_nonce — verify nonce is fresh.
 3. prove_intent — generate ZK proof.
@@ -560,13 +596,25 @@ router.post('/chat', async (req: Request, res: Response) => {
             intent = mcpResult.intent;
           }
 
-          // Check if this is a request_btc_wallet call to trigger frontend UI
-          if (toolCall.function.name === 'request_btc_wallet' && mcpResult.result?.action === 'request_btc_wallet_connection') {
+          // Check if this is a connect_btc_wallet call to trigger frontend UI
+          if (toolCall.function.name === 'connect_btc_wallet' && mcpResult.result?.action === 'connect_btc_wallet') {
             intent = {
               ...mcpResult.intent,
-              type: 'REQUEST_BTC_WALLET',
-              suiAddress: args.sui_address,
-              reason: args.reason || 'BTC staking',
+              type: 'CONNECT_BTC_WALLET',
+              walletType: args.wallet_type || 'any',
+              reason: args.reason || 'BTC operations',
+            };
+          }
+
+          // Check if this is a send_btc_transfer call to trigger frontend UI
+          if (toolCall.function.name === 'send_btc_transfer' && mcpResult.result?.action === 'send_btc_transfer') {
+            intent = {
+              ...mcpResult.intent,
+              type: 'SEND_BTC_TRANSFER',
+              toAddress: args.to_address,
+              amount: args.amount_btc,
+              memo: args.memo,
+              network: args.network || 'testnet',
             };
           }
 
@@ -635,8 +683,8 @@ router.post('/btc-payment/complete', async (req: Request, res: Response) => {
   try {
     const { intentId, paymentHeader, amountBtc, suiAddress, network, chain } = req.body;
 
-    if (!intentId || !paymentHeader || !amountBtc || !suiAddress) {
-      res.status(400).json({ error: 'Missing required fields: intentId, paymentHeader, amountBtc, suiAddress' });
+    if (!intentId || !paymentHeader || !amountBtc) {
+      res.status(400).json({ error: 'Missing required fields: intentId, paymentHeader, amountBtc' });
       return;
     }
 

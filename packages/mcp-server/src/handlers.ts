@@ -58,7 +58,7 @@ const TRUST_TOOLS = ["discover_agents", "get_agent_reputation", "get_agent_valid
 const MARKETPLACE_TOOLS = ["search_marketplace", "hire_human", "get_wallet_balance", "execute_payment"];
 const VERIFY_TOOLS = ["check_nonce", "prove_intent", "verify_proof"];
 const CANTON_TOOLS = ["canton_health", "query_attestations", "query_settlements", "prepare_settlement"];
-const BTC_TOOLS = ["init_btc_payment", "confirm_btc_transfer", "get_btc_payment_status", "broadcast_btc_transaction", "request_btc_wallet"];
+const BTC_TOOLS = ["init_btc_payment", "confirm_btc_transfer", "get_btc_payment_status", "broadcast_btc_transaction", "connect_btc_wallet", "send_btc_transfer", "prepare_stake_btc"];
 
 // ─── Main routing function ───────────────────────────────────
 

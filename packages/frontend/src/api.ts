@@ -94,7 +94,6 @@ export interface ChatResponse {
     approvalAmount?: string;   // Amount in base units
     // BTC Wallet
     type?: string;
-    suiAddress?: string;
     reason?: string;
     requiresBTCWallet?: boolean;
     depositAddress?: string;

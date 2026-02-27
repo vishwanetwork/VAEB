@@ -3,7 +3,7 @@ import { ethers } from 'ethers';
 import { CHAIN_CONFIGS, DEFAULT_CHAIN, CONFIG } from './config';
 import { fetchBalances, fetchTools, sendChatMessage, executeChatIntent, ChatResponse, ExecuteResponse, ToolCallInfo, ToolDef } from './api';
 import { BTCWalletConnector, useBTCWallet, btcWalletStyles, sendBitcoinGlobal } from './btc-wallet';
-import { X402PaymentCard, BTCDepositCard, executeX402Payment, X402PaymentDetails, X402Intent, x402Styles } from './x402-payment';
+import { executeX402Payment, X402PaymentDetails, X402Intent, x402Styles } from './x402-payment';
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -100,6 +100,7 @@ export default function App() {
   // BTC Wallet
   const [showBTCConnector, setShowBTCConnector] = useState(false);
   const [btcWalletAddress, setBtcWalletAddress] = useState<string | null>(null);
+  const [btcConnectReason, setBtcConnectReason] = useState<'stake' | 'transfer' | 'connect_only' | null>(null);
 
 
   // X402 Payment
@@ -111,11 +112,26 @@ export default function App() {
   const [btcDepositInfo, setBtcDepositInfo] = useState<{
     depositAddress: string;
     amount: string;
-    suiAddress: string;
     intentId: string;
   } | null>(null);
   const [confirmingBTC, setConfirmingBTC] = useState(false);
   const [signingBTC, setSigningBTC] = useState(false);
+
+  // Pending stake info (after x402 payment, before wallet connection)
+  const [pendingStakeInfo, setPendingStakeInfo] = useState<{
+    depositAddress: string;
+    amount: string;
+    intentId: string;
+  } | null>(null);
+
+  // BTC Transfer
+  const [btcTransferInfo, setBtcTransferInfo] = useState<{
+    toAddress: string;
+    amount: string;
+    memo?: string;
+    network: string;
+  } | null>(null);
+  const [sendingBTCTransfer, setSendingBTCTransfer] = useState(false);
 
   // Auto-scroll
   useEffect(() => {
@@ -146,15 +162,56 @@ export default function App() {
     try {
       const response = await sendChatMessage(msg, address, sessionId, selectedChainKey);
       setSessionId(response.sessionId);
+      console.log('[Chat] intent result: ', response.intent);
 
-      // Check if the response asks for BTC wallet connection via intent
-      const isRequestBTCWallet = response.intent?.type === 'REQUEST_BTC_WALLET' ||
-                                 (response.intent as any)?.requiresBTCWallet;
-      // if (isRequestBTCWallet && !btcWalletAddress) {
-      console.log('isRequestBTCWallet==>>', response)
-      console.log('isRequestBTCWallet==>>', isRequestBTCWallet)
-      if (isRequestBTCWallet) {
-        setShowBTCConnector(true);
+      // Always show connector for new connection requests
+      // setShowBTCConnector(true);
+      // setBtcConnectReason('connect_only');
+
+      // Store intent details for post-connection handling
+      if (!btcWalletAddress && response.intent?.type === 'CONNECT_BTC_WALLET') {
+        const intent = response.intent as any;
+        setMessages(prev => [...prev, {
+          id: nextId(),
+          role: 'system',
+          text: `Please connect your BTC wallet${intent.reason ? ` for ${intent.reason}` : ''}.`,
+        }]);
+      }
+
+      // Handle SEND_BTC_TRANSFER intent
+      if (response.intent?.type === 'SEND_BTC_TRANSFER') {
+        const intent = response.intent as any;
+        console.log('[Chat] SEND_BTC_TRANSFER intent:', intent);
+
+        if (!btcWalletAddress) {
+          // Wallet not connected - show connector first
+          setShowBTCConnector(true);
+          setBtcConnectReason('transfer');
+          setBtcTransferInfo({
+            toAddress: intent.toAddress,
+            amount: intent.amount,
+            memo: intent.memo,
+            network: intent.network || 'testnet',
+          });
+          setMessages(prev => [...prev, {
+            id: nextId(),
+            role: 'system',
+            text: `Please connect your BTC wallet first to send ${intent.amount} BTC.`,
+          }]);
+        } else {
+          // Wallet connected - prepare transfer
+          setBtcTransferInfo({
+            toAddress: intent.toAddress,
+            amount: intent.amount,
+            memo: intent.memo,
+            network: intent.network || 'testnet',
+          });
+          setMessages(prev => [...prev, {
+            id: nextId(),
+            role: 'system',
+            text: `Ready to send ${intent.amount} BTC to ${intent.toAddress.slice(0, 10)}...`,
+          }]);
+        }
       }
 
       // Check if x402 payment is required
@@ -162,7 +219,7 @@ export default function App() {
         const intent = response.intent as any;
         setX402Payment({
           amount: intent.paymentAmount,
-          amountDisplay: `$${(parseInt(intent.paymentAmount) / 1000000).toFixed(2)}`,
+          amountDisplay: `$${(parseInt(intent.paymentAmount) / 1000000)}`,
           asset: intent.paymentAsset,
           payTo: intent.payTo,
           network: 'base',
@@ -176,28 +233,20 @@ export default function App() {
         } as X402Intent);
       }
 
-      // Check if BTC deposit address is ready
-      // CORRECT ORDER: Only show deposit card AFTER BTC wallet is connected
-      if (response.intent?.type === 'BTC_STAKE' && response.intent.depositAddress) {
+      // Check if BTC deposit address is ready (supports both BTC_STAKE and STAKE_BTC)
+      if ((response.intent?.type === 'BTC_STAKE' || response.intent?.type === 'STAKE_BTC') && response.intent.depositAddress) {
         const intent = response.intent as any;
-        if (btcWalletAddress) {
-          // BTC wallet already connected - show deposit card
-          setBtcDepositInfo({
-            depositAddress: intent.depositAddress,
-            amount: intent.amount,
-            suiAddress: intent.suiAddress,
-            intentId: intent.reviewId || intent.intentId,
-          });
-        } else {
-          // BTC wallet not connected yet - show connector first
-          setShowBTCConnector(true);
-          // Store the deposit info temporarily
-          setMessages(prev => [...prev, {
-            id: nextId(),
-            role: 'system',
-            text: 'BTC staking address generated. Please connect your BTC wallet first.',
-          }]);
-        }
+        // Show deposit card directly - user is ready to send BTC
+        setBtcDepositInfo({
+          depositAddress: intent.depositAddress,
+          amount: intent.amount,
+          intentId: intent.reviewId || intent.intentId,
+        });
+        setMessages(prev => [...prev, {
+          id: nextId(),
+          role: 'system',
+          text: `Ready to deposit ${intent.amount} BTC. Click "Sign & Pay" to send from your connected wallet.`,
+        }]);
       }
 
       const assistantMsg: ChatMessage = {
@@ -248,7 +297,7 @@ export default function App() {
     }
   }, [connected]);
 
-  const connectWallet = useCallback(async () => {
+  const connectEvmWallet = useCallback(async () => {
     setConnectError(null);
     const mm = getMetaMask();
     if (!mm) {
@@ -422,11 +471,11 @@ export default function App() {
       // Step 1: Generate EIP-712 signature for x402 payment (payai format)
       const paymentResult = await executeX402Payment(signer, x402Payment);
 
-      setMessages(prev => [...prev, {
-        id: nextId(),
-        role: 'system',
-        text: `Payment signature generated, fetching BTC staking address...`,
-      }]);
+      // setMessages(prev => [...prev, {
+      //   id: nextId(),
+      //   role: 'system',
+      //   text: `Payment signature generated, fetching BTC staking address...`,
+      // }]);
 
       // Step 2: Route payment through the server (updates btcPaymentStore + calls bridge)
       console.log('[X402] Sending payment to server for intent:', x402Intent.intentId);
@@ -438,7 +487,6 @@ export default function App() {
           intentId: x402Intent.intentId,
           paymentHeader: paymentResult.paymentHeader,
           amountBtc: x402Intent.amount,
-          suiAddress: x402Intent.suiAddress,
           network: x402Intent.network,
         }),
       });
@@ -459,20 +507,31 @@ export default function App() {
       setMessages(prev => [...prev, {
         id: nextId(),
         role: 'system',
-        text: `BTC staking address obtained! Preparing deposit details...`,
+        text: `BTC staking address obtained! Preparing deposit details... BTC wallet connection`,
       }]);
+
+      // if (!btcWalletAddress) {
+      //   setMessages(prev => [...prev, {
+      //     id: nextId(),
+      //     role: 'system',
+      //     text: `The BTC wallet has not been connected yet. Please connect the wallet first`,
+      //   }]);
+      //   setBtcConnectReason('stake');
+      // }
+
+      setShowBTCConnector(true);
+      setBtcConnectReason("stake");
 
       // Clear payment UI
       setX402Payment(null);
       setX402Intent(null);
 
-      // Step 3: Show BTC deposit card if we have the address
+      // Save deposit info for later (will show card after wallet connection via MCP)
       const depositAddress = resultData.deposit_address;
       if (depositAddress) {
-        setBtcDepositInfo({
+        setPendingStakeInfo({
           depositAddress,
           amount: x402Intent.amount,
-          suiAddress: x402Intent.suiAddress,
           intentId: x402Intent.intentId,
         });
       }
@@ -531,16 +590,21 @@ export default function App() {
 
   // ── BTC Sign and Send ─────────────────────────────────────
 
-  const handleBTCSignAndSend = useCallback(async () => {
-    if (!btcDepositInfo || !btcWalletAddress) return;
+  const handleBTCSignAndSend = useCallback(async (depositInfo?: null | {
+    depositAddress: string;
+    amount: string;
+    intentId: string
+  }) => {
+    const info = depositInfo || btcDepositInfo;
+    if (!info || !btcWalletAddress) return;
 
     setSigningBTC(true);
     try {
       // Convert BTC amount to satoshis
-      const amountInSatoshi = Math.floor(parseFloat(btcDepositInfo.amount) * 100000000);
+      const amountInSatoshi = Math.floor(parseFloat(info.amount) * 100000000);
 
       // Call wallet to sign and send (using global function)
-      const txid = await sendBitcoinGlobal(btcDepositInfo.depositAddress, amountInSatoshi);
+      const txid = await sendBitcoinGlobal(info.depositAddress, amountInSatoshi);
 
       // Add success message
       setMessages(prev => [...prev, {
@@ -551,7 +615,7 @@ export default function App() {
 
       // Send confirmation to backend
       await sendMessage(
-        `I have sent BTC, transaction hash is ${txid}, intent_id is ${btcDepositInfo.intentId}, please confirm the deposit`,
+        `I have sent BTC, transaction hash is ${txid}, intent_id is ${info.intentId}, please confirm the deposit`,
         true
       );
 
@@ -569,6 +633,46 @@ export default function App() {
     }
   }, [btcDepositInfo, btcWalletAddress, sendMessage]);
 
+  // ── Execute BTC Transfer ──────────────────────────────────
+
+  const handleExecuteBTCTransfer = useCallback(async () => {
+    if (!btcTransferInfo || !btcWalletAddress) return;
+
+    setSendingBTCTransfer(true);
+    try {
+      // Convert BTC amount to satoshis
+      const amountInSatoshi = Math.floor(parseFloat(btcTransferInfo.amount) * 100000000);
+
+      // Call wallet to sign and send (using global function)
+      const txid = await sendBitcoinGlobal(btcTransferInfo.toAddress, amountInSatoshi);
+
+      // Add success message
+      setMessages(prev => [...prev, {
+        id: nextId(),
+        role: 'system',
+        text: `BTC transfer successful! Sent ${btcTransferInfo.amount} BTC to ${btcTransferInfo.toAddress.slice(0, 10)}... Tx hash: ${txid.slice(0, 16)}...`,
+      }]);
+
+      // Clear transfer info
+      setBtcTransferInfo(null);
+
+      // Notify backend
+      await sendMessage(
+        `I have successfully sent ${btcTransferInfo.amount} BTC to ${btcTransferInfo.toAddress}. Transaction hash: ${txid}`,
+        true
+      );
+    } catch (err: any) {
+      console.error('[BTC Transfer] Error:', err);
+      setMessages(prev => [...prev, {
+        id: nextId(),
+        role: 'system',
+        text: `BTC transfer failed: ${err.message}`,
+      }]);
+    } finally {
+      setSendingBTCTransfer(false);
+    }
+  }, [btcTransferInfo, btcWalletAddress, sendMessage]);
+
   // ── BTC Wallet Connection ─────────────────────────────────
 
   const handleBTCConnect = useCallback(async (btcAddress: string, walletType: string) => {
@@ -582,31 +686,44 @@ export default function App() {
       text: `BTC wallet connected: ${btcAddress.slice(0, 10)}...${btcAddress.slice(-8)} (${walletType})`,
     }]);
 
-    // Check if we already have a BTC deposit address pending
-    // This handles the case where init_btc_payment already returned the address
-    const pendingDeposit = messages.find(m =>
-      m.intent?.type === 'BTC_STAKE' && m.intent.depositAddress
-    );
+    // Handle different connection reasons
+    const reason = btcConnectReason;
+    setBtcConnectReason(null); // Reset reason after use
 
-    if (pendingDeposit && pendingDeposit.intent) {
-      // We have the deposit address - show deposit card immediately
-      const intent = pendingDeposit.intent as any;
-      setBtcDepositInfo({
-        depositAddress: intent.depositAddress,
-        amount: intent.amount,
-        suiAddress: intent.suiAddress,
-        intentId: intent.reviewId || intent.intentId,
-      });
-      setMessages(prev => [...prev, {
-        id: nextId(),
-        role: 'system',
-        text: 'You can now send BTC from your connected wallet to the staking address.',
-      }]);
-    } else {
-      // Need to get the deposit address
-      await sendMessage(`BTC wallet connected, address is ${btcAddress}, please get the BTC staking address`, false);
+    console.log('[BTC Connect] Reason:', reason);
+
+    switch (reason) {
+      case 'stake':
+        // BTC staking flow - send message to get STAKE_BTC intent from MCP
+        if (pendingStakeInfo) {
+          await sendMessage(
+            `BTC wallet connected. I need to transfer ${pendingStakeInfo.amount} BTC to the staking address ${pendingStakeInfo.depositAddress}. Please initiate the transaction. Intent ID: ${pendingStakeInfo.intentId}`,
+            false
+          );
+          // Clear pending info after sending
+          setPendingStakeInfo(null);
+        } else {
+          // No pending stake info, just notify connection
+          await sendMessage(`BTC wallet connected, address is ${btcAddress}`, false);
+        }
+        break;
+      case 'transfer':
+        // BTC transfer flow - execute transfer if we have transfer info
+        if (btcTransferInfo) {
+          setMessages(prev => [...prev, {
+            id: nextId(),
+            role: 'system',
+            text: `Ready to send ${btcTransferInfo.amount} BTC.`,
+          }]);
+          await handleExecuteBTCTransfer();
+        }
+        break;
+
+      case 'connect_only':
+        setShowBTCConnector(true)
+        break;
     }
-  }, [sendMessage, messages]);
+  }, [sendMessage, btcConnectReason, pendingStakeInfo, btcTransferInfo, handleExecuteBTCTransfer]);
 
   const handleBTCCancel = useCallback(() => {
     setShowBTCConnector(false);
@@ -683,7 +800,7 @@ export default function App() {
       {/* Connect */}
       {!connected && (
         <section className="connect-section">
-          <button className="btn btn-primary btn-connect" onClick={connectWallet}>
+          <button className="btn btn-primary btn-connect" onClick={connectEvmWallet}>
             Connect Wallet
           </button>
           <p className="connect-hint">Connect MetaMask to start chatting with your agent</p>
@@ -726,7 +843,7 @@ export default function App() {
       {connected && (
         <div className="chat-container">
           <div className="messages">
-            {messages.map(msg => (
+            {messages.map((msg, index) => (
               <div key={msg.id} className={`message message-${msg.role} fade-in`}>
                 {msg.role === 'assistant' && (
                   <div className="message-avatar">
@@ -773,7 +890,7 @@ export default function App() {
                   {/*)}*/}
 
 
-                  {/* X402 */}
+                  {/* X402 Payment Card - only show for messages with BTC_STAKE_PAYMENT_REQUIRED intent */}
                   {msg.intent && msg.intent.type == 'BTC_STAKE_PAYMENT_REQUIRED' && x402Payment && (
                     <div className="intent-card fade-in">
                       <div className="intent-header">
@@ -809,6 +926,60 @@ export default function App() {
                         </button>
                       </div>
                     </div>
+                  )}
+
+
+                  {/*<BTCDepositCard*/}
+                  {/*  depositAddress={btcDepositInfo.depositAddress}*/}
+                  {/*  amount={btcDepositInfo.amount}*/}
+                  {/*  suiAddress={btcDepositInfo.suiAddress}*/}
+                  {/*  fromAddress={btcWalletAddress || undefined}*/}
+                  {/*  onConfirm={handleBTCDepositConfirm}*/}
+                  {/*  onSignAndSend={btcWalletAddress ? handleBTCSignAndSend : undefined}*/}
+                  {/*  confirming={confirmingBTC}*/}
+                  {/*  signing={signingBTC}*/}
+                  {/*  btcWalletConnected={!!btcWalletAddress}*/}
+                  {/*/>*/}
+                  {/* BTC Deposit Card - shown for messages with BTC_STAKE intent that has depositAddress */}
+                  {/* This associates the card with the specific message that generated the deposit address */}
+
+
+                  {msg.intent && msg.intent.type == 'STAKE_BTC' && (
+                    <div className="intent-card fade-in">
+                      <div className="intent-header">
+                        <div className="intent-dots">
+                          {[0, 1, 2].map(i => <span key={i} className="intent-dot"/>)}
+                        </div>
+                        <span className="intent-label">BTC Deposit</span>
+                      </div>
+                      <div className="intent-body">
+                        <div className="intent-row">
+                          <span className="intent-key">To</span>
+                          <span className="intent-val mono">{msg.intent.depositAddress}</span>
+                        </div>
+                        <div className="intent-row">
+                          <span className="intent-key">Amount</span>
+                          <span className="intent-val mono">{msg.intent.amount} BTC</span>
+                        </div>
+                        <div className="intent-row">
+                          <span className="intent-key">Receive Token</span>
+                          <span className="intent-val mono">BTCvc (minted to vault)</span>
+                        </div>
+                      </div>
+                      <div className="intent-actions">
+                        <button className="btn btn-sm" onClick={() => handleBTCCancel()}>
+                          Decline
+                        </button>
+                        <button
+                          className="btn btn-primary btn-sm"
+                          onClick={() => handleBTCSignAndSend(btcDepositInfo)}
+                          disabled={!btcWalletAddress || signingBTC}
+                        >
+                          {signingBTC ? 'Sending...' : 'Sign & Pay'}
+                        </button>
+                      </div>
+                    </div>
+
                   )}
 
 
@@ -1007,36 +1178,6 @@ export default function App() {
               </div>
             )}
 
-            {/* X402 Payment Card */}
-            {/*{x402Payment && x402Intent && (*/}
-            {/*  <div className="message message-system fade-in">*/}
-            {/*    <X402PaymentCard*/}
-            {/*      payment={x402Payment}*/}
-            {/*      intent={x402Intent}*/}
-            {/*      onPay={handleX402Pay}*/}
-            {/*      onCancel={handleX402Cancel}*/}
-            {/*      paying={payingX402}*/}
-            {/*    />*/}
-            {/*  </div>*/}
-            {/*)}*/}
-
-            {/* BTC Deposit Card */}
-            {btcDepositInfo && (
-              <div className="message message-system fade-in">
-                <BTCDepositCard
-                  depositAddress={btcDepositInfo.depositAddress}
-                  amount={btcDepositInfo.amount}
-                  suiAddress={btcDepositInfo.suiAddress}
-                  fromAddress={btcWalletAddress || undefined}
-                  onConfirm={handleBTCDepositConfirm}
-                  onSignAndSend={btcWalletAddress ? handleBTCSignAndSend : undefined}
-                  confirming={confirmingBTC}
-                  signing={signingBTC}
-                  btcWalletConnected={!!btcWalletAddress}
-                />
-              </div>
-            )}
-
             <div ref={messagesEndRef} />
           </div>
 
@@ -1081,6 +1222,7 @@ export default function App() {
           description="Please connect your BTC wallet to complete the staking process. You will use this wallet to send BTC to the staking address."
         />
       )}
+
 
       {/* Footer */}
       <footer className="footer">

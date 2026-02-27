@@ -452,17 +452,13 @@ export function getToolDefinitions() {
     {
       name: "init_btc_payment",
       description:
-        "Initialize BTC staking to receive BTCVC on Sui via Vishwa's x402 payment service. IMPORTANT: This requires TWO payments: (1) $0.5 USDC service fee on Base network (x402 protocol) to obtain the BTC deposit address, (2) The actual BTC deposit from user's BTC wallet. First call will return payment requirements (402 response), user must pay $0.5 USDC, then call again with payment_header to get the actual BTC deposit address.",
+        "Initialize BTC staking to receive BTCVC via Vishwa's x402 payment service. IMPORTANT: This requires TWO payments: (1) $0.5 USDC service fee on Base network (x402 protocol) to obtain the BTC deposit address, (2) The actual BTC deposit from user's BTC wallet. BTCVC will be minted to a fixed vault address. First call will return payment requirements (402 response), user must pay $0.5 USDC, then call again with payment_header to get the actual BTC deposit address.",
       inputSchema: {
         type: "object" as const,
         properties: {
           amount_btc: {
             type: "string",
             description: "Amount of BTC to stake (e.g., \"0.001\")",
-          },
-          sui_address: {
-            type: "string",
-            description: "Required: Sui address to receive BTCVC (format: 0x + 64 hex chars)",
           },
           network: {
             type: "string",
@@ -482,7 +478,7 @@ export function getToolDefinitions() {
             description: "Optional: x402 payment header/proof after paying $0.5 USDC (obtained from payment transaction)",
           },
         },
-        required: ["amount_btc", "sui_address"],
+        required: ["amount_btc"],
       },
     },
 
@@ -556,22 +552,84 @@ export function getToolDefinitions() {
     },
 
     {
-      name: "request_btc_wallet",
+      name: "connect_btc_wallet",
       description:
-        "Request the user to connect their BTC wallet. This triggers the frontend to show a BTC wallet connection modal (Xverse, Unisat, Leather). Call this after getting the Sui address and before init_btc_payment. Returns instructions for the user to follow.",
+        "Connect a BTC wallet and retrieve the user's Bitcoin address. This is the first step for any BTC operation. The frontend will show a wallet selection modal (Xverse, Unisat, Leather) and return the connected address. Call this when the user wants to connect their BTC wallet, send BTC, or before any BTC-related action.",
       inputSchema: {
         type: "object" as const,
         properties: {
+          wallet_type: {
+            type: "string",
+            enum: ["xverse", "unisat", "leather"],
+            description: "Optional: Preferred wallet type. If not specified, user can choose from available wallets.",
+          },
           reason: {
             type: "string",
-            description: "Reason for requesting BTC wallet connection (default: 'BTC staking')",
-          },
-          sui_address: {
-            type: "string",
-            description: "Optional: Sui address that will receive BTCVC (for reference)",
+            description: "Reason for connecting the wallet (default: 'BTC operations')",
           },
         },
         required: [],
+      },
+    },
+
+    {
+      name: "send_btc_transfer",
+      description:
+        "Send a Bitcoin transfer to a specified address. Requires a connected BTC wallet. The frontend will prompt the user to confirm and sign the transaction in their wallet. Returns the transaction hash upon success. Call this after connect_btc_wallet returns the from_address.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          to_address: {
+            type: "string",
+            description: "The recipient's Bitcoin address",
+          },
+          amount_btc: {
+            type: "string",
+            description: "Amount of BTC to send (e.g., '0.001')",
+          },
+          from_address: {
+            type: "string",
+            description: "Optional: Sender's BTC address (if already connected)",
+          },
+          wallet_type: {
+            type: "string",
+            description: "Optional: Wallet type used (xverse, unisat, leather)",
+          },
+          memo: {
+            type: "string",
+            description: "Optional: Memo or note for the transaction",
+          },
+          network: {
+            type: "string",
+            enum: ["mainnet", "testnet"],
+            description: "Bitcoin network (default: testnet)",
+          },
+        },
+        required: ["to_address", "amount_btc"],
+      },
+    },
+
+    {
+      name: "prepare_stake_btc",
+      description:
+        "Prepare BTC staking transaction after x402 payment is complete and BTC wallet is connected. Call this when user confirms they want to send BTC to the staking address. Returns STAKE_BTC intent for frontend to show deposit card.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          deposit_address: {
+            type: "string",
+            description: "The BTC deposit address for staking",
+          },
+          amount: {
+            type: "string",
+            description: "Amount of BTC to stake (e.g., '0.001')",
+          },
+          intent_id: {
+            type: "string",
+            description: "The intent ID from the x402 payment",
+          },
+        },
+        required: ["deposit_address", "amount", "intent_id"],
       },
     },
 
