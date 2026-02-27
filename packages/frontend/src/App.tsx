@@ -170,6 +170,8 @@ export default function App() {
 
       // Store intent details for post-connection handling
       if (!btcWalletAddress && response.intent?.type === 'CONNECT_BTC_WALLET') {
+        setShowBTCConnector(true)
+        setBtcConnectReason('connect_only');
         const intent = response.intent as any;
         setMessages(prev => [...prev, {
           id: nextId(),
