@@ -722,7 +722,6 @@ export default function App() {
         break;
 
       case 'connect_only':
-        setShowBTCConnector(true)
         break;
     }
   }, [sendMessage, btcConnectReason, pendingStakeInfo, btcTransferInfo, handleExecuteBTCTransfer]);
