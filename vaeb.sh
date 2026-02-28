@@ -72,6 +72,19 @@ build_services() {
     fi
 }
 
+# push all images
+push_images() {
+    print_status "Push VAEB images..."
+    cd "$PROJECT_ROOT"
+
+    if docker compose push; then
+        print_success "All images push successfully"
+    else
+        print_error "Push failed!"
+        exit 1
+    fi
+}
+
 # Start all services
 start_services() {
     print_status "Starting VAEB services..."
@@ -123,6 +136,7 @@ show_menu() {
     echo ""
     echo "Commands:"
     echo "  build       Build all Docker images"
+    echo "  push        Push all Docker images"
     echo "  start       Start all services"
     echo "  stop        Stop all services"
     echo "  restart     Restart all services"
@@ -139,6 +153,9 @@ case "${1:-}" in
         check_env
         check_docker
         build_services
+        ;;
+    push)
+        push_images
         ;;
     start)
         check_env
