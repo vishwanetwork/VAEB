@@ -410,87 +410,104 @@ const conversationStore = new Map<string, Array<OpenAI.ChatCompletionMessagePara
 
 // ─── System Prompt ───────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are VAEB Agent — an AI assistant powered by ${provider === '0g' ? '0G decentralized AI serving network and ' : ''}MCP (Model Context Protocol) tools for verified on-chain execution on Base Sepolia. You implement ERC-8150 (Zero-Knowledge Agent Payment Verification) and x402 (HTTP 402 agent-to-agent micropayments on Base).
+const SYSTEM_PROMPT = `You are VAEB Agent — an AI assistant for verified on-chain execution. You help users stake BTC to receive BTCVC on Sui, and execute DeFi transactions with ZK verification.
 
-The user holds their own USDC (non-custodial). When paying, the user first approves the AgentWallet to spend their tokens, then signs a ZKIntent commitment. The AgentWallet uses transferFrom to move funds on their behalf after ZK proof verification.
+You speak the same language as the user. If the user writes in Chinese, respond in Chinese. If English, respond in English.
 
-DECISION GUIDE — pick the right tool for the user's request:
+ROUTING — Identify the user's intent and act immediately:
 
-"I need a dog walker / groceries / errands / hire someone"
-  → search_marketplace → hire_human (Marketplace flow)
+**BTC Operations** — Check which type:
+  - **BTC Staking to BTCVC** (user mentions BTCVC, Sui, staking, bridging to Sui)
+    → Go to BTC STAKING FLOW below.
+  - **General BTC Transfer** (user wants to send BTC to an address, make a payment in BTC, transfer Bitcoin)
+    → Go to BTC TRANSFER FLOW below.
 
-"Send 50 USDC to 0xABC" / "Swap ETH for USDC" / "Transfer tokens"
-  → use eip 8150 intents: first check balance, then check nonce, then create_intent, optionally simulate_intent, then execute_payment after signing
+**DeFi action** (send/transfer/swap tokens, USDC payment, etc.)
+  → create_intent → EXECUTION PIPELINE
 
-"What's my balance?" / "How much USDC do I have?"
-  → get_wallet_balance (for AgentWallet) or read_balance (for any wallet/token)
+**Balance / price / gas / tx status queries**
+  → Use the appropriate read-only tool: get_wallet_balance, read_balance, get_price, estimate_gas, get_receipt, check_nonce
 
-"What's the price of ETH?" / "ETH/USDC price"
-  → get_price
+**Agent discovery / reputation**
+  → discover_agents, get_agent_reputation, compare_agents
 
-"How much gas for a swap?" / "Estimate gas"
-  → estimate_gas
+---
 
-"Check my transaction" / "What happened with tx 0x..."
-  → get_receipt
+BTC TRANSFER FLOW (Send BTC to any address):
 
-"Find a good agent" / "Which agent should I use?"
-  → discover_agents → compare_agents
+Trigger: User wants to send BTC, make a BTC payment, or transfer Bitcoin to an address. Keywords: "send", "transfer", "pay with BTC", "send bitcoin", etc.
 
-"Is this agent reliable?" / "Agent #3 reputation"
-  → get_agent_reputation → get_agent_validations
+Step 1 — Extract information:
+- to_address: The recipient's BTC address. If not provided, ask.
+- amount_btc: How much BTC to send (e.g., "0.001"). If not provided, ask.
 
-"Simulate before executing" / "Dry run this intent"
-  → simulate_intent
+Step 2 — Connect BTC wallet:
+- Call connect_btc_wallet with reason="BTC transfer".
+- The frontend will show a wallet connection modal.
+- Wait for the user to connect their wallet.
 
-"Cancel that intent" / "Nevermind, don't execute"
-  → cancel_intent
+Step 3 — Send the transfer:
+- Once wallet is connected, call send_btc_transfer with to_address and amount_btc.
+- The frontend will prompt the user to confirm and sign in their wallet.
+- Returns the transaction hash upon completion.
 
-"Is this nonce used?" / "Check nonce 0x..."
-  → check_nonce
+CRITICAL RULES for BTC transfer:
+- ALWAYS call connect_btc_wallet FIRST before send_btc_transfer.
+- NEVER call init_btc_payment for general BTC transfers — that's only for BTC staking to BTCVC.
+- The to_address can be any valid BTC address, not just staking addresses.
 
-"Generate a ZK proof for this intent"
-  → prove_intent
+---
 
-"Verify this proof"
-  → verify_proof
+BTC STAKING FLOW (BTC → BTCVC):
 
-IMPORTANT: NEVER execute a transaction directly. ALL on-chain actions MUST go through the full intent pipeline: create_intent → check balance → check_nonce → prove_intent → verify_proof → user signs → execute_payment.
+Trigger: Any mention of staking BTC, getting BTCVC, depositing Bitcoin for BTCVC, bridging BTC, minting BTCVC, or similar intent — in any language, any phrasing.
 
-MARKETPLACE FLOW (hiring humans for physical tasks):
-1. User describes a need → IMMEDIATELY call search_marketplace. Don't wait.
-2. Present results: name, rating, rate (USDC), skills, distance. Recommend the best match.
-3. When the user says "yes", "ok", "sure", "go ahead", "hire them", or ANY affirmative response → IMMEDIATELY call hire_human. Do NOT ask again. Do NOT say "shall we proceed?" — just call the tool.
-4. hire_human creates a payment intent bundle for the user to sign.
-5. Then follow the EXECUTION PIPELINE below to complete payment.
+Step 1 — Extract information from the user's message:
+- amount_btc: How much BTC to stake (e.g. 0.001). If not provided, ask.
+- Once you have the amount, proceed immediately to Step 2. Do NOT ask for anything else.
 
-CRITICAL: When the user confirms, call hire_human RIGHT AWAY. Never ask for confirmation twice.
+Step 2 — Connect BTC wallet:
+- Call connect_btc_wallet with reason="BTC staking to BTCVC".
+- The frontend will show a wallet connection modal.
 
-INTENT FLOW (ERC-8150 ZK-verified DeFi — swap, transfer, stake):
-1. User requests a DeFi action → call create_intent to build an intent bundle (nonce, expiry, actions, calldata).
-2. Show the human-readable preview (amount, token, recipient). Ask for confirmation.
-3. Optionally call simulate_intent to dry-run before committing.
-4. On confirmation → follow the EXECUTION PIPELINE below.
+Step 3 — Initialize staking payment:
+- Call init_btc_payment with amount_btc only.
+- The frontend will automatically show a payment card for the $0.5 USDC service fee.
+- Tell the user the staking is being initialized and the payment UI will appear.
+- Note: BTCVC will be minted to a fixed vault address.
 
-EXECUTION PIPELINE (required for ALL on-chain transactions):
-1. get_wallet_balance — verify the user's EOA has sufficient USDC. Abort if insufficient.
-2. check_nonce — verify the intent nonce hasn't been used on-chain. Abort if already used.
-3. prove_intent — generate a Groth16 ZK proof (Poseidon commitment over the bundle via snarkjs prover service).
-4. User approves USDC spending (ERC-20 approve) for the AgentWallet, then signs ZKIntent(nonce, expiry, commitment) via EIP-712.
-5. execute_payment — submits executeWithProof() on-chain: re-checks nonce, verifies the ZK proof, recovers the signer from the EIP-712 signature, and atomically executes transferFrom calls.
+Step 4 — After x402 payment and BTC wallet connection:
+- When user says "I need to transfer X BTC to the staking address Y" or provides deposit_address, amount, and intent_id, call prepare_stake_btc with these parameters.
+- This will return STAKE_BTC intent for the frontend to show the deposit card.
 
-TRUST FLOW (evaluating agents):
-1. User asks about agents → call discover_agents to find available agents.
-2. For details on a specific agent → get_agent_reputation + get_agent_validations.
-3. To compare options → compare_agents with multiple agent IDs.
-4. After a successful execution → post_feedback to update reputation.
+Step 5 — User sends BTC:
+- The frontend will show a BTC Deposit card with the deposit address.
+- User clicks "Sign & Pay" to send BTC from their connected wallet.
+
+Step 6 — Confirm deposit:
+- When the user provides a tx_hash and intent_id, call confirm_btc_transfer.
+- BTCVC will be minted to the fixed vault address.
+
+CRITICAL RULES for BTC staking:
+- ALWAYS call connect_btc_wallet before init_btc_payment.
+- NEVER call get_wallet_balance or read_balance — BTC comes from an external wallet, not the connected EVM wallet.
+- If the user provides amount in their first message, call connect_btc_wallet immediately, then init_btc_payment — do NOT ask for confirmation first.
+- When user confirms they want to transfer to the staking address and provides deposit_address, amount, and intent_id, call prepare_stake_btc.
+
+---
+
+EXECUTION PIPELINE (for USDC on-chain transactions only — NOT for BTC):
+1. get_wallet_balance — verify sufficient USDC.
+2. check_nonce — verify nonce is fresh.
+3. prove_intent — generate ZK proof.
+4. User signs EIP-712 in wallet.
+5. execute_payment — submit on-chain.
 
 RULES:
-- Be concise — 2-3 sentences max per response
-- ALWAYS use the right tool — never make up data or balances
-- Treat all USDC as real USDC — never mention "mock", "test", or "fake"
-- Do NOT call get_wallet_balance unless the user specifically asks about balance
-- When unsure which flow, ask the user to clarify`;
+- Be concise — 2-3 sentences max per response.
+- ALWAYS use the right tool — never make up data.
+- Treat all USDC as real — never mention "mock", "test", or "fake".
+- Act immediately when you have enough information. Don't over-confirm.`;
 
 // ─── Tool Call Info (returned to frontend) ───────────────────
 
@@ -521,6 +538,12 @@ router.post('/chat', async (req: Request, res: Response) => {
       conversationStore.set(sid, []);
     }
     const history = conversationStore.get(sid)!;
+
+    // Validate history integrity - remove orphaned tool messages
+    while (history.length > 0 && (history[0] as any).role === 'tool') {
+      console.warn('[Chat] Removing orphaned tool message from history start');
+      history.shift();
+    }
 
     // Add user message
     history.push({ role: 'user', content: message });
@@ -579,6 +602,28 @@ router.post('/chat', async (req: Request, res: Response) => {
             intent = mcpResult.intent;
           }
 
+          // Check if this is a connect_btc_wallet call to trigger frontend UI
+          if (toolCall.function.name === 'connect_btc_wallet' && mcpResult.result?.action === 'connect_btc_wallet') {
+            intent = {
+              ...mcpResult.intent,
+              type: 'CONNECT_BTC_WALLET',
+              walletType: args.wallet_type || 'any',
+              reason: args.reason || 'BTC operations',
+            };
+          }
+
+          // Check if this is a send_btc_transfer call to trigger frontend UI
+          if (toolCall.function.name === 'send_btc_transfer' && mcpResult.result?.action === 'send_btc_transfer') {
+            intent = {
+              ...mcpResult.intent,
+              type: 'SEND_BTC_TRANSFER',
+              toAddress: args.to_address,
+              amount: args.amount_btc,
+              memo: args.memo,
+              network: args.network || 'testnet',
+            };
+          }
+
           resultText =
             typeof mcpResult.result === 'string'
               ? mcpResult.result
@@ -618,9 +663,33 @@ router.post('/chat', async (req: Request, res: Response) => {
       history.push({ role: 'assistant', content: agentMessage });
     }
 
-    // Keep history manageable
+    // Keep history manageable - but preserve message integrity
+    // Don't cut off in the middle of tool call/response pairs
     if (history.length > 30) {
-      history.splice(0, history.length - 20);
+      // Find a safe point to truncate (after a complete exchange)
+      // Look for the first assistant message after index 5
+      let safeIndex = 0;
+      for (let i = 5; i < history.length - 20; i++) {
+        const msg = history[i] as any;
+        if (msg.role === 'assistant' && !msg.tool_calls) {
+          safeIndex = i + 1;
+          break;
+        }
+        if (msg.role === 'tool') {
+          // Skip tool responses, find the next safe point
+          safeIndex = i + 1;
+        }
+      }
+      if (safeIndex > 0) {
+        history.splice(0, safeIndex);
+      } else {
+        // Fallback: just keep last 20 messages
+        history.splice(0, history.length - 20);
+        // Clean up any orphaned tool messages at the start
+        while (history.length > 0 && (history[0] as any).role === 'tool') {
+          history.shift();
+        }
+      }
     }
 
     res.json({
@@ -633,6 +702,41 @@ router.post('/chat', async (req: Request, res: Response) => {
     console.error('Chat error:', err?.message || err);
     if (err?.status) console.error('API status:', err.status);
     if (err?.error) console.error('API error body:', JSON.stringify(err.error));
+    res.status(500).json({ error: err.message || 'Internal server error' });
+  }
+});
+
+// ─── POST /api/btc-payment/complete ─────────────────────────
+// Routes x402 payment through MCP so btcPaymentStore is updated properly
+
+router.post('/btc-payment/complete', async (req: Request, res: Response) => {
+  try {
+    const { intentId, paymentHeader, amountBtc, suiAddress, network, chain } = req.body;
+
+    if (!intentId || !paymentHeader || !amountBtc) {
+      res.status(400).json({ error: 'Missing required fields: intentId, paymentHeader, amountBtc' });
+      return;
+    }
+
+    const mcpConfig = buildMcpConfig(chain);
+
+    // Call init_btc_payment with payment_header — this updates the store status
+    // and calls the bridge from the server side (no CORS issues)
+    const mcpResult = await handleToolCall(
+      'init_btc_payment',
+      {
+        amount_btc: amountBtc,
+        sui_address: suiAddress,
+        network: network || 'mainnet',
+        payment_header: paymentHeader,
+        intent_id: intentId,
+      },
+      mcpConfig
+    );
+
+    res.json(mcpResult.result);
+  } catch (err: any) {
+    console.error('BTC payment complete error:', err?.message || err);
     res.status(500).json({ error: err.message || 'Internal server error' });
   }
 });

@@ -1,9 +1,30 @@
 import { CONFIG } from './config';
 
-export async function fetchBalances(address: string, chain?: string) {
+export async function fetchBalances(address: string, chain?: string): Promise<{
+  user: { eth: string; usdc: string; address: string };
+  agent: { eth: string; usdc: string; address: string };
+}> {
   const params = chain ? `?chain=${chain}` : '';
-  const res = await fetch(`${CONFIG.apiUrl}/balances/${address}${params}`);
-  return res.json();
+  try {
+    const res = await fetch(`${CONFIG.apiUrl}/balances/${address}${params}`);
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      console.error('Failed to fetch balances:', errorData.error || res.statusText);
+      // Return default values on error
+      return {
+        user: { eth: '0', usdc: '0', address },
+        agent: { eth: '0', usdc: '0', address: '' },
+      };
+    }
+    return res.json();
+  } catch (error) {
+    console.error('Error fetching balances:', error);
+    // Return default values on network error
+    return {
+      user: { eth: '0', usdc: '0', address },
+      agent: { eth: '0', usdc: '0', address: '' },
+    };
+  }
 }
 
 // Tool definitions
@@ -71,8 +92,16 @@ export interface ChatResponse {
     approvalTarget?: string;   // AgentWallet address (spender)
     approvalToken?: string;    // ERC20 address (USDC)
     approvalAmount?: string;   // Amount in base units
+    // BTC Wallet
+    type?: string;
+    reason?: string;
+    requiresBTCWallet?: boolean;
+    depositAddress?: string;
   };
   sessionId: string;
+  // BTC Wallet
+  requestBTCWallet?: boolean;
+  btcWalletAddress?: string;
 }
 
 export interface ExecuteResponse {

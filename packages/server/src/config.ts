@@ -20,6 +20,18 @@ export interface ChainConfig {
 }
 
 export const CHAIN_CONFIGS: Record<string, ChainConfig> = {
+  base: {
+    key: 'base',
+    chainId: 8453,
+    chainName: 'Base',
+    rpcUrl: process.env.BASE_MAINNET_RPC_URL || 'https://mainnet.base.org',
+    explorer: 'https://basescan.org',
+    contracts: {
+      AgentWallet: process.env.AGENT_WALLET_ADDRESS_BASE || '',
+      MockUSDC: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // Base USDC
+      Verifier: process.env.VERIFIER_ADDRESS_BASE || '',
+    },
+  },
   base_sepolia: {
     key: 'base_sepolia',
     chainId: 84532,
@@ -60,7 +72,7 @@ export function getChainConfig(chainKey?: string): ChainConfig {
 const defaultChain = getChainConfig();
 
 export const CONFIG = {
-  port: parseInt(process.env.PORT || '13002'),
+  port: parseInt(process.env.SERVER_PORT || '13002'),
   agentPrivateKey: process.env.AGENT_PRIVATE_KEY || '',
   ownerAddress: process.env.OWNER_ADDRESS || '',
   // Default chain values (backward compat for legacy routes)

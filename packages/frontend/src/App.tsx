@@ -1,7 +1,9 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { ethers } from 'ethers';
-import { CHAIN_CONFIGS, DEFAULT_CHAIN } from './config';
+import { CHAIN_CONFIGS, DEFAULT_CHAIN, CONFIG } from './config';
 import { fetchBalances, fetchTools, sendChatMessage, executeChatIntent, ChatResponse, ExecuteResponse, ToolCallInfo, ToolDef } from './api';
+import { BTCWalletConnector, useBTCWallet, btcWalletStyles, sendBitcoinGlobal } from './btc-wallet';
+import { executeX402Payment, X402PaymentDetails, X402Intent, x402Styles } from './x402-payment';
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -24,8 +26,12 @@ interface WalletBalances {
 // ── Helpers ───────────────────────────────────────────────────
 
 function truncAddr(addr: string, len = 6): string {
-  if (addr.length <= len * 2 + 2) return addr;
-  return addr.slice(0, len + 2) + '...' + addr.slice(-len);
+  if(addr){
+    if (addr.length <= len * 2 + 2) return addr;
+    return addr.slice(0, len + 2) + '...' + addr.slice(-len);
+  } else {
+    return ''
+  }
 }
 
 let msgCounter = 0;
@@ -91,6 +97,42 @@ export default function App() {
   const [toolsProvider, setToolsProvider] = useState('');
   const [showTools, setShowTools] = useState(false);
 
+  // BTC Wallet
+  const [showBTCConnector, setShowBTCConnector] = useState(false);
+  const [btcWalletAddress, setBtcWalletAddress] = useState<string | null>(null);
+  const [btcConnectReason, setBtcConnectReason] = useState<'stake' | 'transfer' | 'connect_only' | null>(null);
+
+
+  // X402 Payment
+  const [x402Payment, setX402Payment] = useState<X402PaymentDetails | null>(null);
+  const [x402Intent, setX402Intent] = useState<X402Intent | null>(null);
+  const [payingX402, setPayingX402] = useState(false);
+
+  // BTC Deposit
+  const [btcDepositInfo, setBtcDepositInfo] = useState<{
+    depositAddress: string;
+    amount: string;
+    intentId: string;
+  } | null>(null);
+  const [confirmingBTC, setConfirmingBTC] = useState(false);
+  const [signingBTC, setSigningBTC] = useState(false);
+
+  // Pending stake info (after x402 payment, before wallet connection)
+  const [pendingStakeInfo, setPendingStakeInfo] = useState<{
+    depositAddress: string;
+    amount: string;
+    intentId: string;
+  } | null>(null);
+
+  // BTC Transfer
+  const [btcTransferInfo, setBtcTransferInfo] = useState<{
+    toAddress: string;
+    amount: string;
+    memo?: string;
+    network: string;
+  } | null>(null);
+  const [sendingBTCTransfer, setSendingBTCTransfer] = useState(false);
+
   // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -120,6 +162,94 @@ export default function App() {
     try {
       const response = await sendChatMessage(msg, address, sessionId, selectedChainKey);
       setSessionId(response.sessionId);
+      console.log('[Chat] intent result: ', response.intent);
+
+      // Always show connector for new connection requests
+      // setShowBTCConnector(true);
+      // setBtcConnectReason('connect_only');
+
+      // Store intent details for post-connection handling
+      if (!btcWalletAddress && response.intent?.type === 'CONNECT_BTC_WALLET') {
+        setShowBTCConnector(true)
+        setBtcConnectReason('connect_only');
+        const intent = response.intent as any;
+        setMessages(prev => [...prev, {
+          id: nextId(),
+          role: 'system',
+          text: `Please connect your BTC wallet${intent.reason ? ` for ${intent.reason}` : ''}.`,
+        }]);
+      }
+
+      // Handle SEND_BTC_TRANSFER intent
+      if (response.intent?.type === 'SEND_BTC_TRANSFER') {
+        const intent = response.intent as any;
+        console.log('[Chat] SEND_BTC_TRANSFER intent:', intent);
+
+        if (!btcWalletAddress) {
+          // Wallet not connected - show connector first
+          setShowBTCConnector(true);
+          setBtcConnectReason('transfer');
+          setBtcTransferInfo({
+            toAddress: intent.toAddress,
+            amount: intent.amount,
+            memo: intent.memo,
+            network: intent.network || 'testnet',
+          });
+          setMessages(prev => [...prev, {
+            id: nextId(),
+            role: 'system',
+            text: `Please connect your BTC wallet first to send ${intent.amount} BTC.`,
+          }]);
+        } else {
+          // Wallet connected - prepare transfer
+          setBtcTransferInfo({
+            toAddress: intent.toAddress,
+            amount: intent.amount,
+            memo: intent.memo,
+            network: intent.network || 'testnet',
+          });
+          setMessages(prev => [...prev, {
+            id: nextId(),
+            role: 'system',
+            text: `Ready to send ${intent.amount} BTC to ${intent.toAddress.slice(0, 10)}...`,
+          }]);
+        }
+      }
+
+      // Check if x402 payment is required
+      if (response.intent?.type === 'BTC_STAKE_PAYMENT_REQUIRED') {
+        const intent = response.intent as any;
+        setX402Payment({
+          amount: intent.paymentAmount,
+          amountDisplay: `$${(parseInt(intent.paymentAmount) / 1000000)}`,
+          asset: intent.paymentAsset,
+          payTo: intent.payTo,
+          network: 'base',
+          description: 'Obtain BTC staking address',
+          maxTimeoutSeconds: 60,
+          resource: 'https://mcp-x402.vishwanetwork.xyz/api/bridge/sui/btc2btcvc',
+        });
+        setX402Intent({
+          ...intent,
+          intentId: intent.reviewId || intent.intentId,
+        } as X402Intent);
+      }
+
+      // Check if BTC deposit address is ready (supports both BTC_STAKE and STAKE_BTC)
+      if ((response.intent?.type === 'BTC_STAKE' || response.intent?.type === 'STAKE_BTC') && response.intent.depositAddress) {
+        const intent = response.intent as any;
+        // Show deposit card directly - user is ready to send BTC
+        setBtcDepositInfo({
+          depositAddress: intent.depositAddress,
+          amount: intent.amount,
+          intentId: intent.reviewId || intent.intentId,
+        });
+        setMessages(prev => [...prev, {
+          id: nextId(),
+          role: 'system',
+          text: `Ready to deposit ${intent.amount} BTC. Click "Sign & Pay" to send from your connected wallet.`,
+        }]);
+      }
 
       const assistantMsg: ChatMessage = {
         id: nextId(),
@@ -169,7 +299,7 @@ export default function App() {
     }
   }, [connected]);
 
-  const connectWallet = useCallback(async () => {
+  const connectEvmWallet = useCallback(async () => {
     setConnectError(null);
     const mm = getMetaMask();
     if (!mm) {
@@ -217,7 +347,7 @@ export default function App() {
       setMessages([{
         id: nextId(),
         role: 'assistant',
-        text: `Welcome! Your agent wallet is ready.\n\nI'm connected to the Rent a Human marketplace — I can find and hire real people to handle physical tasks for you. Groceries, dog walking, deliveries, you name it.\n\nWhat do you need done today?`,
+        text: `Welcome! Your wallet is connected.\n\nI can help you stake BTC to receive BTCVC on Sui, or execute DeFi transactions with ZK verification.\n\nWhat would you like to do?`,
       }]);
       setShowSuggestions(true);
 
@@ -333,6 +463,274 @@ export default function App() {
     sendMessage("I changed my mind, let's not do that.");
   }, [sendMessage]);
 
+  // ── X402 Payment ──────────────────────────────────────────
+
+  const handleX402Pay = useCallback(async () => {
+    if (!signer || !x402Payment || !x402Intent) return;
+
+    setPayingX402(true);
+    try {
+      // Step 1: Generate EIP-712 signature for x402 payment (payai format)
+      const paymentResult = await executeX402Payment(signer, x402Payment);
+
+      // setMessages(prev => [...prev, {
+      //   id: nextId(),
+      //   role: 'system',
+      //   text: `Payment signature generated, fetching BTC staking address...`,
+      // }]);
+
+      // Step 2: Route payment through the server (updates btcPaymentStore + calls bridge)
+      console.log('[X402] Sending payment to server for intent:', x402Intent.intentId);
+
+      const response = await fetch(`${CONFIG.apiUrl}/btc-payment/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          intentId: x402Intent.intentId,
+          paymentHeader: paymentResult.paymentHeader,
+          amountBtc: x402Intent.amount,
+          network: x402Intent.network,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Server error: ${response.status}`);
+      }
+
+      const resultData = await response.json();
+      console.log('[X402] Server response:', resultData);
+
+      if (!resultData.success) {
+        throw new Error(resultData.error || 'Payment failed on server');
+      }
+
+      // Add success message
+      setMessages(prev => [...prev, {
+        id: nextId(),
+        role: 'system',
+        text: `BTC staking address obtained! Preparing deposit details... BTC wallet connection`,
+      }]);
+
+      // if (!btcWalletAddress) {
+      //   setMessages(prev => [...prev, {
+      //     id: nextId(),
+      //     role: 'system',
+      //     text: `The BTC wallet has not been connected yet. Please connect the wallet first`,
+      //   }]);
+      //   setBtcConnectReason('stake');
+      // }
+
+      setShowBTCConnector(true);
+      setBtcConnectReason("stake");
+
+      // Clear payment UI
+      setX402Payment(null);
+      setX402Intent(null);
+
+      // Save deposit info for later (will show card after wallet connection via MCP)
+      const depositAddress = resultData.deposit_address;
+      if (depositAddress) {
+        setPendingStakeInfo({
+          depositAddress,
+          amount: x402Intent.amount,
+          intentId: x402Intent.intentId,
+        });
+      }
+
+    } catch (err: any) {
+      console.error('[X402 Payment] Error:', err);
+      setMessages(prev => [...prev, {
+        id: nextId(),
+        role: 'system',
+        text: `Payment failed: ${err.message}`,
+      }]);
+    } finally {
+      setPayingX402(false);
+    }
+  }, [signer, x402Payment, x402Intent]);
+
+  const handleX402Cancel = useCallback(() => {
+    setX402Payment(null);
+    setX402Intent(null);
+    sendMessage("I don't want to pay the service fee right now");
+  }, [sendMessage]);
+
+  // ── BTC Deposit Confirmation ──────────────────────────────
+
+  const handleBTCDepositConfirm = useCallback(async () => {
+    if (!btcDepositInfo) return;
+
+    setConfirmingBTC(true);
+    try {
+      // Manual confirmation - user provides tx hash
+      const txHash = prompt("Please enter your BTC transaction hash (txid):");
+
+      if (!txHash) {
+        setConfirmingBTC(false);
+        return;
+      }
+
+      // Send confirmation message
+      await sendMessage(
+        `I have sent BTC, transaction hash is ${txHash}, intent_id is ${btcDepositInfo.intentId}, please confirm the deposit`,
+        true
+      );
+
+      // Clear deposit UI
+      setBtcDepositInfo(null);
+    } catch (err: any) {
+      setMessages(prev => [...prev, {
+        id: nextId(),
+        role: 'system',
+        text: `Confirmation failed: ${err.message}`,
+      }]);
+    } finally {
+      setConfirmingBTC(false);
+    }
+  }, [btcDepositInfo, sendMessage]);
+
+  // ── BTC Sign and Send ─────────────────────────────────────
+
+  const handleBTCSignAndSend = useCallback(async (depositInfo?: null | {
+    depositAddress: string;
+    amount: string;
+    intentId: string
+  }) => {
+    const info = depositInfo || btcDepositInfo;
+    if (!info || !btcWalletAddress) return;
+
+    setSigningBTC(true);
+    try {
+      // Convert BTC amount to satoshis
+      const amountInSatoshi = Math.floor(parseFloat(info.amount) * 100000000);
+
+      // Call wallet to sign and send (using global function)
+      const txid = await sendBitcoinGlobal(info.depositAddress, amountInSatoshi);
+
+      // Add success message
+      setMessages(prev => [...prev, {
+        id: nextId(),
+        role: 'system',
+        text: `BTC transaction broadcast! Tx hash: ${txid.slice(0, 10)}...`,
+      }]);
+
+      // Send confirmation to backend
+      await sendMessage(
+        `I have sent BTC, transaction hash is ${txid}, intent_id is ${info.intentId}, please confirm the deposit`,
+        true
+      );
+
+      // Clear deposit UI
+      setBtcDepositInfo(null);
+    } catch (err: any) {
+      console.error('[BTC Sign] Error:', err);
+      setMessages(prev => [...prev, {
+        id: nextId(),
+        role: 'system',
+        text: `BTC transaction failed: ${err.message}`,
+      }]);
+    } finally {
+      setSigningBTC(false);
+    }
+  }, [btcDepositInfo, btcWalletAddress, sendMessage]);
+
+  // ── Execute BTC Transfer ──────────────────────────────────
+
+  const handleExecuteBTCTransfer = useCallback(async () => {
+    if (!btcTransferInfo || !btcWalletAddress) return;
+
+    setSendingBTCTransfer(true);
+    try {
+      // Convert BTC amount to satoshis
+      const amountInSatoshi = Math.floor(parseFloat(btcTransferInfo.amount) * 100000000);
+
+      // Call wallet to sign and send (using global function)
+      const txid = await sendBitcoinGlobal(btcTransferInfo.toAddress, amountInSatoshi);
+
+      // Add success message
+      setMessages(prev => [...prev, {
+        id: nextId(),
+        role: 'system',
+        text: `BTC transfer successful! Sent ${btcTransferInfo.amount} BTC to ${btcTransferInfo.toAddress.slice(0, 10)}... Tx hash: ${txid.slice(0, 16)}...`,
+      }]);
+
+      // Clear transfer info
+      setBtcTransferInfo(null);
+
+      // Notify backend
+      await sendMessage(
+        `I have successfully sent ${btcTransferInfo.amount} BTC to ${btcTransferInfo.toAddress}. Transaction hash: ${txid}`,
+        true
+      );
+    } catch (err: any) {
+      console.error('[BTC Transfer] Error:', err);
+      setMessages(prev => [...prev, {
+        id: nextId(),
+        role: 'system',
+        text: `BTC transfer failed: ${err.message}`,
+      }]);
+    } finally {
+      setSendingBTCTransfer(false);
+    }
+  }, [btcTransferInfo, btcWalletAddress, sendMessage]);
+
+  // ── BTC Wallet Connection ─────────────────────────────────
+
+  const handleBTCConnect = useCallback(async (btcAddress: string, walletType: string) => {
+    setBtcWalletAddress(btcAddress);
+    setShowBTCConnector(false);
+
+    // Notify the chat that BTC wallet is connected
+    setMessages(prev => [...prev, {
+      id: nextId(),
+      role: 'system',
+      text: `BTC wallet connected: ${btcAddress.slice(0, 10)}...${btcAddress.slice(-8)} (${walletType})`,
+    }]);
+
+    // Handle different connection reasons
+    const reason = btcConnectReason;
+    setBtcConnectReason(null); // Reset reason after use
+
+    console.log('[BTC Connect] Reason:', reason);
+
+    switch (reason) {
+      case 'stake':
+        // BTC staking flow - send message to get STAKE_BTC intent from MCP
+        if (pendingStakeInfo) {
+          await sendMessage(
+            `BTC wallet connected. I need to transfer ${pendingStakeInfo.amount} BTC to the staking address ${pendingStakeInfo.depositAddress}. Please initiate the transaction. Intent ID: ${pendingStakeInfo.intentId}`,
+            false
+          );
+          // Clear pending info after sending
+          setPendingStakeInfo(null);
+        } else {
+          // No pending stake info, just notify connection
+          await sendMessage(`BTC wallet connected, address is ${btcAddress}`, false);
+        }
+        break;
+      case 'transfer':
+        // BTC transfer flow - execute transfer if we have transfer info
+        if (btcTransferInfo) {
+          setMessages(prev => [...prev, {
+            id: nextId(),
+            role: 'system',
+            text: `Ready to send ${btcTransferInfo.amount} BTC.`,
+          }]);
+          await handleExecuteBTCTransfer();
+        }
+        break;
+
+      case 'connect_only':
+        break;
+    }
+  }, [sendMessage, btcConnectReason, pendingStakeInfo, btcTransferInfo, handleExecuteBTCTransfer]);
+
+  const handleBTCCancel = useCallback(() => {
+    setShowBTCConnector(false);
+    sendMessage("I don't want to connect a BTC wallet right now");
+  }, [sendMessage]);
+
   // ── Key handler ───────────────────────────────────────────
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -374,13 +772,13 @@ export default function App() {
                 ))}
               </select>
             </div>
-            {connected && toolDefs.length > 0 && (
+            {connected && toolDefs && toolDefs.length > 0 && (
               <button
                 className="tools-toggle"
                 onClick={() => setShowTools(v => !v)}
                 title="View MCP Tools"
               >
-                {showTools ? 'Hide Tools' : `Tools (${toolDefs.length})`}
+                {showTools ? 'Hide Tools' : `Tools (${toolDefs?.length || 0})`}
               </button>
             )}
             {connected && balances && (
@@ -403,7 +801,7 @@ export default function App() {
       {/* Connect */}
       {!connected && (
         <section className="connect-section">
-          <button className="btn btn-primary btn-connect" onClick={connectWallet}>
+          <button className="btn btn-primary btn-connect" onClick={connectEvmWallet}>
             Connect Wallet
           </button>
           <p className="connect-hint">Connect MetaMask to start chatting with your agent</p>
@@ -416,7 +814,7 @@ export default function App() {
       )}
 
       {/* Tools Panel */}
-      {showTools && toolDefs.length > 0 && (
+            {showTools && toolDefs && toolDefs.length > 0 && (
         <div className="tools-panel fade-in">
           <div className="tools-panel-header">
             <span className="tools-panel-title">MCP Tools</span>
@@ -427,7 +825,7 @@ export default function App() {
               <div key={t.name} className="tools-panel-item">
                 <div className="tools-panel-name">{t.name}</div>
                 <div className="tools-panel-desc">{t.description}</div>
-                {t.parameters.length > 0 && (
+                {t.parameters && t.parameters.length > 0 && (
                   <div className="tools-panel-params">
                     {t.parameters.map(p => (
                       <span key={p.name} className="tools-panel-param">
@@ -446,7 +844,7 @@ export default function App() {
       {connected && (
         <div className="chat-container">
           <div className="messages">
-            {messages.map(msg => (
+            {messages.map((msg, index) => (
               <div key={msg.id} className={`message message-${msg.role} fade-in`}>
                 {msg.role === 'assistant' && (
                   <div className="message-avatar">
@@ -461,75 +859,69 @@ export default function App() {
                   )}
 
                   {/* MCP Tool Calls */}
-                  {msg.toolCalls && msg.toolCalls.length > 0 && (
-                    <div className="tool-calls-card fade-in">
-                      <div className="tool-calls-header">
-                        <div className="tool-calls-dots">
-                          {[0, 1, 2].map(i => <span key={i} className="tool-calls-dot" />)}
-                        </div>
-                        <span className="tool-calls-label">MCP TOOL CALLS</span>
-                      </div>
-                      <div className="tool-calls-body">
-                        {msg.toolCalls.map((tc, i) => (
-                          <div key={i} className="tool-call-row">
-                            <div className="tool-call-indicator">
-                              <span className="tool-call-check">&#10003;</span>
-                            </div>
-                            <div className="tool-call-info">
-                              <div className="tool-call-name">{tc.tool}</div>
-                              <div className="tool-call-args">
-                                {Object.entries(tc.args).map(([k, v]) => (
-                                  <span key={k} className="tool-call-arg">
-                                    {k}: {typeof v === 'string' ? v : JSON.stringify(v)}
-                                  </span>
-                                ))}
-                              </div>
-                              <div className="tool-call-timing">{tc.durationMs}ms</div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                  {/*{msg.toolCalls && msg.toolCalls.length > 0 && (*/}
+                  {/*  <div className="tool-calls-card fade-in">*/}
+                  {/*    <div className="tool-calls-header">*/}
+                  {/*      <div className="tool-calls-dots">*/}
+                  {/*        {[0, 1, 2].map(i => <span key={i} className="tool-calls-dot" />)}*/}
+                  {/*      </div>*/}
+                  {/*      <span className="tool-calls-label">MCP TOOL CALLS</span>*/}
+                  {/*    </div>*/}
+                  {/*    <div className="tool-calls-body">*/}
+                  {/*      {msg.toolCalls.map((tc, i) => (*/}
+                  {/*        <div key={i} className="tool-call-row">*/}
+                  {/*          <div className="tool-call-indicator">*/}
+                  {/*            <span className="tool-call-check">&#10003;</span>*/}
+                  {/*          </div>*/}
+                  {/*          <div className="tool-call-info">*/}
+                  {/*            <div className="tool-call-name">{tc.tool}</div>*/}
+                  {/*            <div className="tool-call-args">*/}
+                  {/*              {Object.entries(tc.args).map(([k, v]) => (*/}
+                  {/*                <span key={k} className="tool-call-arg">*/}
+                  {/*                  {k}: {typeof v === 'string' ? v : JSON.stringify(v)}*/}
+                  {/*                </span>*/}
+                  {/*              ))}*/}
+                  {/*            </div>*/}
+                  {/*            <div className="tool-call-timing">{tc.durationMs}ms</div>*/}
+                  {/*          </div>*/}
+                  {/*        </div>*/}
+                  {/*      ))}*/}
+                  {/*    </div>*/}
+                  {/*  </div>*/}
+                  {/*)}*/}
 
-                  {/* Intent approval card */}
-                  {msg.intent && msg.execStep === undefined && (
+
+                  {/* X402 Payment Card - only show for messages with BTC_STAKE_PAYMENT_REQUIRED intent */}
+                  {msg.intent && msg.intent.type == 'BTC_STAKE_PAYMENT_REQUIRED' && x402Payment && (
                     <div className="intent-card fade-in">
                       <div className="intent-header">
                         <div className="intent-dots">
                           {[0, 1, 2].map(i => <span key={i} className="intent-dot" />)}
                         </div>
-                        <span className="intent-label">PAYMENT INTENT</span>
+                        <span className="intent-label">x402 Payment</span>
                       </div>
                       <div className="intent-body">
                         <div className="intent-row">
-                          <span className="intent-key">Hire</span>
-                          <span className="intent-val">{msg.intent.humanName}</span>
+                          <span className="intent-key">To</span>
+                          <span
+                            className="intent-val mono">{x402Payment?.payTo.slice(0, 8)}...{x402Payment?.payTo.slice(-6)}</span>
                         </div>
                         <div className="intent-row">
-                          <span className="intent-key">Task</span>
-                          <span className="intent-val">{msg.intent.task}</span>
+                          <span className="intent-key">Network</span>
+                          <span className="intent-val mono">Base</span>
                         </div>
                         <div className="intent-row">
                           <span className="intent-key">Amount</span>
-                          <span className="intent-val intent-amount">{msg.intent.amount} USDC</span>
-                        </div>
-                        <div className="intent-row">
-                          <span className="intent-key">To</span>
-                          <span className="intent-val mono">{truncAddr(msg.intent.recipient)}</span>
-                        </div>
-                        <div className="intent-row">
-                          <span className="intent-key">Expires</span>
-                          <span className="intent-val mono">{new Date(msg.intent.expiry * 1000).toLocaleTimeString()}</span>
+                          <span className="intent-val mono">{x402Payment?.amountDisplay}</span>
                         </div>
                       </div>
                       <div className="intent-actions">
-                        <button className="btn btn-sm" onClick={() => handleDecline(msg.id)}>
+                        <button className="btn btn-sm" onClick={() => handleX402Cancel()}>
                           Decline
                         </button>
                         <button
                           className="btn btn-primary btn-sm"
-                          onClick={() => handleApprove(msg.id, msg.intent!)}
+                          onClick={() => handleX402Pay()}
                         >
                           Sign & Pay
                         </button>
@@ -537,42 +929,142 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* ZK Verification Log */}
-                  {msg.execStep !== undefined && (
-                    <div className="exec-log fade-in">
-                      <div className="exec-log-header">
-                        <div className="exec-log-dots">
-                          {[0, 1, 2].map(i => <span key={i} className="exec-log-dot" />)}
+
+                  {/*<BTCDepositCard*/}
+                  {/*  depositAddress={btcDepositInfo.depositAddress}*/}
+                  {/*  amount={btcDepositInfo.amount}*/}
+                  {/*  suiAddress={btcDepositInfo.suiAddress}*/}
+                  {/*  fromAddress={btcWalletAddress || undefined}*/}
+                  {/*  onConfirm={handleBTCDepositConfirm}*/}
+                  {/*  onSignAndSend={btcWalletAddress ? handleBTCSignAndSend : undefined}*/}
+                  {/*  confirming={confirmingBTC}*/}
+                  {/*  signing={signingBTC}*/}
+                  {/*  btcWalletConnected={!!btcWalletAddress}*/}
+                  {/*/>*/}
+                  {/* BTC Deposit Card - shown for messages with BTC_STAKE intent that has depositAddress */}
+                  {/* This associates the card with the specific message that generated the deposit address */}
+
+
+                  {msg.intent && msg.intent.type == 'STAKE_BTC' && (
+                    <div className="intent-card fade-in">
+                      <div className="intent-header">
+                        <div className="intent-dots">
+                          {[0, 1, 2].map(i => <span key={i} className="intent-dot"/>)}
                         </div>
-                        <span className="exec-log-label">EXECUTION LOG (PENDING)</span>
+                        <span className="intent-label">BTC Deposit</span>
                       </div>
-                      <div className="exec-log-body">
-                        {EXEC_STEPS.map((step, i) => (
-                          <div key={i} className={`exec-log-row ${
-                            i < msg.execStep! ? 'done' :
-                            i === msg.execStep! ? 'active' : 'pending'
-                          }`}>
-                            <div className="exec-log-indicator">
-                              {i < msg.execStep! ? (
-                                <span className="exec-log-check">&#10003;</span>
-                              ) : i === msg.execStep! ? (
-                                <span className="exec-log-spinner" />
-                              ) : (
-                                <span className="exec-log-circle" />
-                              )}
-                            </div>
-                            <div className="exec-log-info">
-                              <div className="exec-log-step-label">{step.label}</div>
-                              <div className="exec-log-step-desc">
-                                {i < msg.execStep! ? 'Completed' :
-                                  i === msg.execStep! ? step.desc : 'Waiting...'}
-                              </div>
-                            </div>
-                          </div>
-                        ))}
+                      <div className="intent-body">
+                        <div className="intent-row">
+                          <span className="intent-key">To</span>
+                          <span className="intent-val mono">{msg.intent.depositAddress}</span>
+                        </div>
+                        <div className="intent-row">
+                          <span className="intent-key">Amount</span>
+                          <span className="intent-val mono">{msg.intent.amount} BTC</span>
+                        </div>
+                        <div className="intent-row">
+                          <span className="intent-key">Receive Token</span>
+                          <span className="intent-val mono">BTCvc (minted to vault)</span>
+                        </div>
+                      </div>
+                      <div className="intent-actions">
+                        <button className="btn btn-sm" onClick={() => handleBTCCancel()}>
+                          Decline
+                        </button>
+                        <button
+                          className="btn btn-primary btn-sm"
+                          onClick={() => handleBTCSignAndSend(btcDepositInfo)}
+                          disabled={!btcWalletAddress || signingBTC}
+                        >
+                          {signingBTC ? 'Sending...' : 'Sign & Pay'}
+                        </button>
                       </div>
                     </div>
+
                   )}
+
+
+                  {/*/!* Intent approval card *!/*/}
+                  {/*{msg.intent && msg.execStep === undefined && (*/}
+                  {/*  <div className="intent-card fade-in">*/}
+                  {/*    <div className="intent-header">*/}
+                  {/*      <div className="intent-dots">*/}
+                  {/*        {[0, 1, 2].map(i => <span key={i} className="intent-dot" />)}*/}
+                  {/*      </div>*/}
+                  {/*      <span className="intent-label">PAYMENT INTENT</span>*/}
+                  {/*    </div>*/}
+                  {/*    <div className="intent-body">*/}
+                  {/*      <div className="intent-row">*/}
+                  {/*        <span className="intent-key">Hire</span>*/}
+                  {/*        <span className="intent-val">{msg.intent.humanName}</span>*/}
+                  {/*      </div>*/}
+                  {/*      <div className="intent-row">*/}
+                  {/*        <span className="intent-key">Task</span>*/}
+                  {/*        <span className="intent-val">{msg.intent.task}</span>*/}
+                  {/*      </div>*/}
+                  {/*      <div className="intent-row">*/}
+                  {/*        <span className="intent-key">Amount</span>*/}
+                  {/*        <span className="intent-val intent-amount">{msg.intent.amount} USDC</span>*/}
+                  {/*      </div>*/}
+                  {/*      <div className="intent-row">*/}
+                  {/*        <span className="intent-key">To</span>*/}
+                  {/*        <span className="intent-val mono">{truncAddr(msg.intent.recipient)}</span>*/}
+                  {/*      </div>*/}
+                  {/*      <div className="intent-row">*/}
+                  {/*        <span className="intent-key">Expires</span>*/}
+                  {/*        <span className="intent-val mono">{new Date(msg.intent.expiry * 1000).toLocaleTimeString()}</span>*/}
+                  {/*      </div>*/}
+                  {/*    </div>*/}
+                  {/*    <div className="intent-actions">*/}
+                  {/*      <button className="btn btn-sm" onClick={() => handleDecline(msg.id)}>*/}
+                  {/*        Decline*/}
+                  {/*      </button>*/}
+                  {/*      <button*/}
+                  {/*        className="btn btn-primary btn-sm"*/}
+                  {/*        onClick={() => handleApprove(msg.id, msg.intent!)}*/}
+                  {/*      >*/}
+                  {/*        Sign & Pay*/}
+                  {/*      </button>*/}
+                  {/*    </div>*/}
+                  {/*  </div>*/}
+                  {/*)}*/}
+
+                  {/* ZK Verification Log */}
+                  {/*{msg.execStep !== undefined && (*/}
+                  {/*  <div className="exec-log fade-in">*/}
+                  {/*    <div className="exec-log-header">*/}
+                  {/*      <div className="exec-log-dots">*/}
+                  {/*        {[0, 1, 2].map(i => <span key={i} className="exec-log-dot" />)}*/}
+                  {/*      </div>*/}
+                  {/*      <span className="exec-log-label">EXECUTION LOG (PENDING)</span>*/}
+                  {/*    </div>*/}
+                  {/*    <div className="exec-log-body">*/}
+                  {/*      {EXEC_STEPS.map((step, i) => (*/}
+                  {/*        <div key={i} className={`exec-log-row ${*/}
+                  {/*          i < msg.execStep! ? 'done' :*/}
+                  {/*          i === msg.execStep! ? 'active' : 'pending'*/}
+                  {/*        }`}>*/}
+                  {/*          <div className="exec-log-indicator">*/}
+                  {/*            {i < msg.execStep! ? (*/}
+                  {/*              <span className="exec-log-check">&#10003;</span>*/}
+                  {/*            ) : i === msg.execStep! ? (*/}
+                  {/*              <span className="exec-log-spinner" />*/}
+                  {/*            ) : (*/}
+                  {/*              <span className="exec-log-circle" />*/}
+                  {/*            )}*/}
+                  {/*          </div>*/}
+                  {/*          <div className="exec-log-info">*/}
+                  {/*            <div className="exec-log-step-label">{step.label}</div>*/}
+                  {/*            <div className="exec-log-step-desc">*/}
+                  {/*              {i < msg.execStep! ? 'Completed' :*/}
+                  {/*                i === msg.execStep! ? step.desc : 'Waiting...'}*/}
+                  {/*            </div>*/}
+                  {/*          </div>*/}
+                  {/*        </div>*/}
+                  {/*      ))}*/}
+                  {/*    </div>*/}
+                  {/*  </div>*/}
+                  {/*)}*/}
 
                   {/* Actual execution steps (from backend) */}
                   {msg.txResult?.steps && (
@@ -657,10 +1149,10 @@ export default function App() {
             {showSuggestions && !loading && (
               <div className="suggestions fade-in">
                 {[
-                  "I need someone to pick up groceries for me",
-                  "Can you find a dog walker nearby?",
-                  "I need help moving some furniture this weekend",
-                  "Who can run a few errands around town?",
+                  "I want to stake 0.0001 BTC for BTCVC",
+                  "What's my USDC balance?",
+                  "What's the price of ETH?",
+                  "Send 10 USDC to 0x...",
                 ].map((text, i) => (
                   <button
                     key={i}
@@ -697,7 +1189,7 @@ export default function App() {
                 ref={inputRef}
                 className="chat-input"
                 type="text"
-                placeholder="Tell me what errand you need..."
+                placeholder="Stake BTC, check balances, or send tokens..."
                 value={input}
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
@@ -722,6 +1214,17 @@ export default function App() {
         </div>
       )}
 
+      {/* BTC Wallet Connector Modal */}
+      {showBTCConnector && (
+        <BTCWalletConnector
+          onConnect={handleBTCConnect}
+          onCancel={handleBTCCancel}
+          title="Connect BTC Wallet"
+          description="Please connect your BTC wallet to complete the staking process. You will use this wallet to send BTC to the staking address."
+        />
+      )}
+
+
       {/* Footer */}
       <footer className="footer">
         <span className="footer-text">Verified Agent Execution Bundle</span>
@@ -730,6 +1233,12 @@ export default function App() {
           <a href="https://github.com/vishwanetwork/VAEB" target="_blank" rel="noopener noreferrer">GitHub</a>
         </div>
       </footer>
+
+      {/* BTC Wallet Styles */}
+      <style>{btcWalletStyles}</style>
+
+      {/* X402 Payment Styles */}
+      <style>{x402Styles}</style>
     </div>
   );
 }
