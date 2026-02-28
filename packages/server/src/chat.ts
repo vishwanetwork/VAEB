@@ -521,13 +521,24 @@ interface CollectedToolCall {
 // ─── POST /api/chat ──────────────────────────────────────────
 
 router.post('/chat', async (req: Request, res: Response) => {
+  // Request-level timeout: abort after 90s to prevent infinite hangs
+  const requestTimeout = setTimeout(() => {
+    if (!res.headersSent) {
+      console.error('[Chat] Request timed out after 90s');
+      res.status(504).json({ error: 'Request timed out — the AI agent or bridge took too long to respond.' });
+    }
+  }, 90_000);
+
   try {
     const { message, walletAddress, sessionId, chain } = req.body;
 
     if (!message || !walletAddress) {
+      clearTimeout(requestTimeout);
       res.status(400).json({ error: 'Missing message or walletAddress' });
       return;
     }
+
+    console.log(`[Chat] message="${message.slice(0, 80)}" chain=${chain} session=${sessionId}`);
 
     // Build per-request MCP config with chain-specific values
     const mcpConfig = buildMcpConfig(chain, walletAddress);
@@ -549,6 +560,7 @@ router.post('/chat', async (req: Request, res: Response) => {
     history.push({ role: 'user', content: message });
 
     // Call LLM with MCP-derived tools
+    console.log(`[Chat] Calling LLM (${provider}/${model}) with ${history.length} history messages and ${tools.length} tools`);
     let response = await createCompletion({
       model,
       max_tokens: 1024,
@@ -558,6 +570,7 @@ router.post('/chat', async (req: Request, res: Response) => {
       ],
       tools,
     });
+    console.log(`[Chat] LLM response: finish_reason=${response.choices[0]?.finish_reason}, has_content=${!!response.choices[0]?.message?.content}`);
 
     // Handle tool use loop
     let intent = null;
@@ -578,7 +591,16 @@ router.post('/chat', async (req: Request, res: Response) => {
           continue;
         }
 
-        const args = JSON.parse(toolCall.function.arguments);
+        let args: Record<string, any>;
+        try {
+          args = JSON.parse(toolCall.function.arguments);
+        } catch (parseErr) {
+          console.error(`[Chat] Failed to parse tool args for ${toolCall.function.name}:`, toolCall.function.arguments);
+          history.push({ role: 'tool', tool_call_id: toolCall.id, content: 'Error: malformed tool arguments' });
+          continue;
+        }
+
+        console.log(`[Chat] Tool call: ${toolCall.function.name}(${JSON.stringify(args).slice(0, 200)})`);
 
         let resultText: string;
         try {
@@ -692,17 +714,24 @@ router.post('/chat', async (req: Request, res: Response) => {
       }
     }
 
-    res.json({
-      message: agentMessage,
-      toolCalls: collectedToolCalls,
-      intent,
-      sessionId: sid,
-    });
+    clearTimeout(requestTimeout);
+    if (!res.headersSent) {
+      res.json({
+        message: agentMessage,
+        toolCalls: collectedToolCalls,
+        intent,
+        sessionId: sid,
+      });
+    }
   } catch (err: any) {
-    console.error('Chat error:', err?.message || err);
-    if (err?.status) console.error('API status:', err.status);
-    if (err?.error) console.error('API error body:', JSON.stringify(err.error));
-    res.status(500).json({ error: err.message || 'Internal server error' });
+    clearTimeout(requestTimeout);
+    console.error('[Chat] Error:', err?.message || err);
+    if (err?.status) console.error('[Chat] API status:', err.status);
+    if (err?.error) console.error('[Chat] API error body:', JSON.stringify(err.error));
+    if (err?.stack) console.error('[Chat] Stack:', err.stack);
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message || 'Internal server error' });
+    }
   }
 });
 
@@ -711,7 +740,7 @@ router.post('/chat', async (req: Request, res: Response) => {
 
 router.post('/btc-payment/complete', async (req: Request, res: Response) => {
   try {
-    const { intentId, paymentHeader, amountBtc, suiAddress, network, chain } = req.body;
+    const { intentId, paymentHeader, amountBtc, network, chain } = req.body;
 
     if (!intentId || !paymentHeader || !amountBtc) {
       res.status(400).json({ error: 'Missing required fields: intentId, paymentHeader, amountBtc' });
@@ -726,7 +755,6 @@ router.post('/btc-payment/complete', async (req: Request, res: Response) => {
       'init_btc_payment',
       {
         amount_btc: amountBtc,
-        sui_address: suiAddress,
         network: network || 'mainnet',
         payment_header: paymentHeader,
         intent_id: intentId,

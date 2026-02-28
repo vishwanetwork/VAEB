@@ -168,16 +168,26 @@ export default function App() {
       // setShowBTCConnector(true);
       // setBtcConnectReason('connect_only');
 
-      // Store intent details for post-connection handling
-      if (!btcWalletAddress && response.intent?.type === 'CONNECT_BTC_WALLET') {
-        setShowBTCConnector(true)
-        setBtcConnectReason('connect_only');
-        const intent = response.intent as any;
-        setMessages(prev => [...prev, {
-          id: nextId(),
-          role: 'system',
-          text: `Please connect your BTC wallet${intent.reason ? ` for ${intent.reason}` : ''}.`,
-        }]);
+      // Handle CONNECT_BTC_WALLET intent
+      if (response.intent?.type === 'CONNECT_BTC_WALLET') {
+        if (btcWalletAddress) {
+          // Wallet already connected — auto-respond so agent continues to next step
+          console.log('[Chat] BTC wallet already connected, auto-responding with address');
+          // Use setTimeout to avoid calling sendMessage while still inside sendMessage
+          setTimeout(() => {
+            sendMessageRef.current?.(`BTC wallet connected, address is ${btcWalletAddress}. Please proceed with the next step.`, false);
+          }, 100);
+        } else {
+          // Wallet not connected — show connector
+          setShowBTCConnector(true);
+          setBtcConnectReason('connect_only');
+          const intent = response.intent as any;
+          setMessages(prev => [...prev, {
+            id: nextId(),
+            role: 'system',
+            text: `Please connect your BTC wallet${intent.reason ? ` for ${intent.reason}` : ''}.`,
+          }]);
+        }
       }
 
       // Handle SEND_BTC_TRANSFER intent
@@ -269,7 +279,7 @@ export default function App() {
       setLoading(false);
       inputRef.current?.focus();
     }
-  }, [input, address, loading, sessionId]);
+  }, [input, address, loading, sessionId, btcWalletAddress, selectedChainKey]);
 
   sendMessageRef.current = sendMessage;
 
@@ -505,37 +515,40 @@ export default function App() {
         throw new Error(resultData.error || 'Payment failed on server');
       }
 
-      // Add success message
-      setMessages(prev => [...prev, {
-        id: nextId(),
-        role: 'system',
-        text: `BTC staking address obtained! Preparing deposit details... BTC wallet connection`,
-      }]);
-
-      // if (!btcWalletAddress) {
-      //   setMessages(prev => [...prev, {
-      //     id: nextId(),
-      //     role: 'system',
-      //     text: `The BTC wallet has not been connected yet. Please connect the wallet first`,
-      //   }]);
-      //   setBtcConnectReason('stake');
-      // }
-
-      setShowBTCConnector(true);
-      setBtcConnectReason("stake");
-
       // Clear payment UI
       setX402Payment(null);
       setX402Intent(null);
 
-      // Save deposit info for later (will show card after wallet connection via MCP)
       const depositAddress = resultData.deposit_address;
-      if (depositAddress) {
-        setPendingStakeInfo({
+
+      if (btcWalletAddress && depositAddress) {
+        // Wallet already connected — skip connector, show deposit card directly
+        setMessages(prev => [...prev, {
+          id: nextId(),
+          role: 'system',
+          text: `BTC staking address obtained! Ready to deposit ${x402Intent.amount} BTC.`,
+        }]);
+        setBtcDepositInfo({
           depositAddress,
           amount: x402Intent.amount,
           intentId: x402Intent.intentId,
         });
+      } else {
+        // Wallet not connected — show connector, save deposit info for after connection
+        setMessages(prev => [...prev, {
+          id: nextId(),
+          role: 'system',
+          text: `BTC staking address obtained! Please connect your BTC wallet to continue.`,
+        }]);
+        setShowBTCConnector(true);
+        setBtcConnectReason("stake");
+        if (depositAddress) {
+          setPendingStakeInfo({
+            depositAddress,
+            amount: x402Intent.amount,
+            intentId: x402Intent.intentId,
+          });
+        }
       }
 
     } catch (err: any) {
@@ -548,7 +561,7 @@ export default function App() {
     } finally {
       setPayingX402(false);
     }
-  }, [signer, x402Payment, x402Intent]);
+  }, [signer, x402Payment, x402Intent, btcWalletAddress]);
 
   const handleX402Cancel = useCallback(() => {
     setX402Payment(null);
@@ -722,6 +735,8 @@ export default function App() {
         break;
 
       case 'connect_only':
+        // After wallet connects, notify agent so the flow continues
+        await sendMessage(`BTC wallet connected, address is ${btcAddress}. Please proceed with the next step.`, false);
         break;
     }
   }, [sendMessage, btcConnectReason, pendingStakeInfo, btcTransferInfo, handleExecuteBTCTransfer]);
@@ -1214,6 +1229,43 @@ export default function App() {
         </div>
       )}
 
+      {/* Standalone BTC Deposit Card — shows when btcDepositInfo is set (e.g., after x402 payment with wallet already connected) */}
+      {btcDepositInfo && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          zIndex: 999,
+        }}>
+          <div style={{
+            background: '#1a1a2e', borderRadius: '12px', padding: '24px', maxWidth: '420px', width: '90%',
+            border: '1px solid rgba(255,255,255,0.1)',
+          }}>
+            <div style={{ fontSize: '14px', fontWeight: 600, marginBottom: '16px', color: '#fff' }}>BTC Deposit</div>
+            <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.6)', marginBottom: '8px' }}>Send to</div>
+            <div style={{
+              fontSize: '11px', fontFamily: 'monospace', color: '#fff', background: 'rgba(255,255,255,0.05)',
+              padding: '8px', borderRadius: '6px', marginBottom: '12px', wordBreak: 'break-all',
+            }}>{btcDepositInfo.depositAddress}</div>
+            <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.6)', marginBottom: '4px' }}>Amount</div>
+            <div style={{ fontSize: '18px', fontWeight: 600, color: '#fff', marginBottom: '4px' }}>{btcDepositInfo.amount} BTC</div>
+            <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.4)', marginBottom: '16px' }}>BTCVC will be minted to vault</div>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                className="btn btn-sm"
+                onClick={() => setBtcDepositInfo(null)}
+                style={{ flex: 1 }}
+              >Cancel</button>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => handleBTCSignAndSend(btcDepositInfo)}
+                disabled={!btcWalletAddress || signingBTC}
+                style={{ flex: 1 }}
+              >{signingBTC ? 'Sending...' : 'Sign & Pay'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* BTC Wallet Connector Modal */}
       {showBTCConnector && (
         <BTCWalletConnector
@@ -1223,7 +1275,6 @@ export default function App() {
           description="Please connect your BTC wallet to complete the staking process. You will use this wallet to send BTC to the staking address."
         />
       )}
-
 
       {/* Footer */}
       <footer className="footer">
