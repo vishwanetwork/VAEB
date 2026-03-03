@@ -409,7 +409,6 @@ router.get('/tools', (_req: Request, res: Response) => {
 const conversationStore = new Map<string, Array<OpenAI.ChatCompletionMessageParam>>();
 
 // ─── System Prompt ───────────────────────────────────────────
-
 const SYSTEM_PROMPT = `You are VAEB Agent — an AI assistant for verified on-chain execution. You help users stake BTC to receive BTCVC on Sui, and execute DeFi transactions with ZK verification.
 
 You speak the same language as the user. If the user writes in Chinese, respond in Chinese. If English, respond in English.
@@ -508,6 +507,7 @@ RULES:
 - ALWAYS use the right tool — never make up data.
 - Treat all USDC as real — never mention "mock", "test", or "fake".
 - Act immediately when you have enough information. Don't over-confirm.`;
+
 
 // ─── Tool Call Info (returned to frontend) ───────────────────
 

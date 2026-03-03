@@ -72,7 +72,16 @@ export async function executeX402Payment(
   const validAfter = now - 300; // 5 minutes ago
   const validBefore = now + 300; // 5 minutes from now
 
-  const response402 = await fetch(payment.resource);
+  const response402 = await fetch(payment.resource, {
+    method: 'POST',
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      action: 'get_payment_requirements',
+    }),
+  });
 
   const body402 = await response402.json();
   console.log('Payment requirements:', body402);
@@ -147,25 +156,24 @@ export async function executeX402Payment(
 }
 
 /**
- * Fetch resource with x402 payment header (payai format)
+ * Fetch resource with x402 payment header (payai format) using POST
  */
 export async function fetchWithX402Payment(
   url: string,
   paymentHeader: string,
-  params: Record<string, string>
+  body: Record<string, any>
 ): Promise<Response> {
-  const queryString = new URLSearchParams(params).toString();
-  const fullUrl = `${url}?${queryString}`;
-
-  console.log('[X402] Fetching:', fullUrl);
+  console.log('[X402] POSTing to:', url);
   console.log('[X402] Payment header length:', paymentHeader.length);
 
-  const response = await fetch(fullUrl, {
-    method: 'GET',
+  const response = await fetch(url, {
+    method: 'POST',
     headers: {
       'Accept': 'application/json',
+      'Content-Type': 'application/json',
       'X-PAYMENT': paymentHeader,
     },
+    body: JSON.stringify(body),
   });
 
   console.log('[X402] Response status:', response.status);
@@ -184,6 +192,158 @@ export async function fetchWithX402Payment(
   }
 
   return response;
+}
+
+/**
+ * Execute x402 payment for custody address directly
+ * 
+ * Flow:
+ * 1. Call custody API directly (will return 402 with payment requirements)
+ * 2. Generate x402 payment header from 402 response
+ * 3. Call custody API again with X-PAYMENT header to complete
+ */
+export async function executeCustodyAddressPayment(
+  signer: ethers.JsonRpcSigner,
+  btcAddress: string,
+  network: string = 'mainnet'
+): Promise<{ success: boolean; response: any }> {
+  console.log('[Custody X402] Starting custody address payment for:', btcAddress);
+
+  const custodyEndpoint = 'https://mcp-x402.vishwanetwork.xyz/api/custody/btc/btc2btcvc';
+
+  // Step 1: Call custody API directly to get 402 payment requirements
+  console.log('[Custody X402] Calling custody API to get payment requirements...');
+  
+  const response402 = await fetch(custodyEndpoint, {
+    method: 'POST',
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      btc_address: btcAddress,
+      network: network,
+    }),
+  });
+
+  console.log('[Custody X402] Response status:', response402.status);
+
+  if (response402.status !== 402) {
+    const errorText = await response402.text();
+    throw new Error(`Expected 402 response, got ${response402.status}: ${errorText}`);
+  }
+
+  // Parse 402 response to get payment requirements
+  const paymentRequirements = await response402.json();
+  console.log('[Custody X402] Payment requirements:', paymentRequirements);
+
+  const accepts = paymentRequirements.accepts?.[0];
+  if (!accepts) {
+    throw new Error('No payment requirements found in 402 response');
+  }
+
+  const { maxAmountRequired, payTo, asset } = accepts;
+
+  // Step 2: Generate x402 payment header
+  const address = await signer.getAddress();
+  const nonce = ethers.hexlify(ethers.randomBytes(32));
+  const now = Math.floor(Date.now() / 1000);
+  const validAfter = now - 300;
+  const validBefore = now + 300;
+
+  // Check USDC balance
+  const usdc = new ethers.Contract(asset, USDC_ABI, signer);
+  const balance = await usdc.balanceOf(address);
+  const requiredAmount = BigInt(maxAmountRequired);
+
+  if (balance < requiredAmount) {
+    throw new Error(
+      `Insufficient USDC balance. Required: ${ethers.formatUnits(requiredAmount, 6)} USDC, ` +
+      `Current: ${ethers.formatUnits(balance, 6)} USDC`
+    );
+  }
+
+  // EIP-712 Domain and Types
+  const domain = {
+    name: 'USD Coin',
+    version: '2',
+    chainId: 8453,
+    verifyingContract: asset,
+  };
+
+  const types = {
+    TransferWithAuthorization: [
+      { name: 'from', type: 'address' },
+      { name: 'to', type: 'address' },
+      { name: 'value', type: 'uint256' },
+      { name: 'validAfter', type: 'uint256' },
+      { name: 'validBefore', type: 'uint256' },
+      { name: 'nonce', type: 'bytes32' },
+    ],
+  };
+
+  const value = {
+    from: address,
+    to: payTo,
+    value: maxAmountRequired,
+    validAfter,
+    validBefore,
+    nonce,
+  };
+
+  console.log('[Custody X402] Signing typed data...', value);
+  const signature = await signer.signTypedData(domain, types, value);
+
+  // Build payment payload
+  const paymentPayload = {
+    x402Version: 1,
+    scheme: 'exact',
+    network: 'base',
+    payload: {
+      signature,
+      authorization: {
+        from: address,
+        to: payTo,
+        value: maxAmountRequired,
+        validAfter: validAfter.toString(),
+        validBefore: validBefore.toString(),
+        nonce,
+      },
+    },
+  };
+
+  const paymentHeader = btoa(JSON.stringify(paymentPayload));
+  console.log('[Custody X402] Payment header generated, calling custody API with payment...');
+
+  // Step 3: Call custody API with payment header to complete
+  const response = await fetch(custodyEndpoint, {
+    method: 'POST',
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      'X-PAYMENT': paymentHeader,
+    },
+    body: JSON.stringify({
+      btc_address: btcAddress,
+      network: network,
+    }),
+  });
+
+  console.log('[Custody X402] Final response status:', response.status);
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('[Custody X402] Custody API failed:', response.status, errorText);
+    throw new Error(`Custody API failed: ${response.status} - ${errorText}`);
+  }
+
+  const responseData = await response.json();
+  console.log('[Custody X402] Custody API response:', responseData);
+
+  return {
+    success: true,
+    response: responseData,
+  };
 }
 
 

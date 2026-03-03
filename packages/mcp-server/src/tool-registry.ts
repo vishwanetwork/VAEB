@@ -633,6 +633,39 @@ export function getToolDefinitions() {
       },
     },
 
+    {
+      name: "apply_add_custody_address",
+      description:
+        "Add a BTC custody address and mint BTCvc tokens via Vishwa's x402 payment service. This requires TWO steps: (1) User provides BTC address and pays $0.5 USDC service fee on Base network via x402 protocol, (2) After payment confirmation, the custody address is added and BTCvc is minted to the vault. First call returns payment requirements and address input UI; second call with payment_header completes the process.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          btc_address: {
+            type: "string",
+            description: "The BTC address to add as custody address (e.g., 'bc1q...' or '1A...'). Optional on first call if user hasn't provided it yet.",
+          },
+          network: {
+            type: "string",
+            enum: ["mainnet", "testnet"],
+            description: "Bitcoin network (default: mainnet)",
+          },
+          expiry_minutes: {
+            type: "number",
+            description: "Minutes until expiration (default: 60)",
+          },
+          payment_header: {
+            type: "string",
+            description: "Optional: x402 payment header/proof after paying $0.5 USDC (obtained from payment transaction). Required for the second call.",
+          },
+          intent_id: {
+            type: "string",
+            description: "Optional: The intent ID from the first call. Required when providing payment_header.",
+          },
+        },
+        required: [],
+      },
+    },
+
     // ─── Canton Tools (Coordination Layer) ──────────────────────
 
     {

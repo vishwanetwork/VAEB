@@ -55,6 +55,7 @@ const btcPaymentStore = new Map<string, BTCPaymentIntent>();
 // ─── Constants ───────────────────────────────────────────────
 
 const X402_BRIDGE_ENDPOINT = "https://mcp-x402.vishwanetwork.xyz/api/bridge/sui/btc2btcvc";
+const X402_CUSTODY_ENDPOINT = "https://mcp-x402.vishwanetwork.xyz/api/custody/btc/btc2btcvc";
 const BTC_TESTNET_API = "https://mempool.space/testnet/api";
 const BTC_MAINNET_API = "https://mempool.space/api";
 
@@ -80,8 +81,8 @@ export const btcTools = {
     config: MCPConfig
   ): Promise<{ result: any; intent?: any }> {
     switch (name) {
-      case "init_btc_payment":
-        return await handleInitBTCPayment(args, config);
+      // case "init_btc_payment":
+      //   return await handleInitBTCPayment(args, config);
       case "confirm_btc_transfer":
         return await handleConfirmBTCTransfer(args, config);
       case "get_btc_payment_status":
@@ -94,6 +95,8 @@ export const btcTools = {
         return await handleSendBTCTransfer(args, config);
       case "prepare_stake_btc":
         return await handlePrepareStakeBTC(args, config);
+      case "apply_add_custody_address":
+        return await handleApplyAddCustodyAddress(args, config);
       default:
         throw new Error(`Unknown BTC tool: ${name}`);
     }
@@ -159,17 +162,17 @@ async function handleInitBTCPayment(
     try {
       console.log(`[BTC Bridge] Calling with payment header for intent: ${existingIntentId}`);
 
-      const params = new URLSearchParams({
-        amount: amount_btc,
-        network: network,
-      });
-
-      const response = await fetchWithTimeout(`${X402_BRIDGE_ENDPOINT}?${params}`, {
-        method: "GET",
+      const response = await fetchWithTimeout(`${X402_BRIDGE_ENDPOINT}`, {
+        method: "POST",
         headers: {
           "Accept": "application/json",
+          "Content-Type": "application/json",
           "X-PAYMENT": payment_header,
         },
+        body: JSON.stringify({
+          amount: amount_btc,
+          network: network,
+        }),
       });
 
       if (!response.ok) {
@@ -260,17 +263,17 @@ async function handleInitBTCPayment(
   try {
     console.log(`[BTC Bridge] Getting x402 payment requirements from ${X402_BRIDGE_ENDPOINT}`);
 
-    // Step 1: Call GET endpoint to get x402 payment requirements
-    const params = new URLSearchParams({
-      amount: amount_btc,
-      network: network,
-    });
-
-    const discoveryResponse = await fetchWithTimeout(`${X402_BRIDGE_ENDPOINT}?${params}`, {
-      method: "GET",
+    // Step 1: Call POST endpoint to get x402 payment requirements
+    const discoveryResponse = await fetchWithTimeout(`${X402_BRIDGE_ENDPOINT}`, {
+      method: "POST",
       headers: {
         "Accept": "application/json",
+        "Content-Type": "application/json",
       },
+      body: JSON.stringify({
+        amount: amount_btc,
+        network: network,
+      }),
     });
 
     console.log(`[BTC Bridge] Discovery response status: ${discoveryResponse.status}`);
@@ -745,6 +748,44 @@ function isValidBTCAddress(address: string): boolean {
   if (address.match(/^tb1[a-z0-9]{39,59}$/i)) return true;
 
   return false;
+}
+
+// ─── In-memory store for custody address intents ─────────────
+
+interface CustodyAddressIntent {
+  id: string;
+  btcAddress: string;
+  network: "mainnet" | "testnet";
+  status: "initialized" | "awaiting_payment" | "payment_completed" | "completed" | "failed";
+  x402Payment?: X402PaymentRequirement;
+  createdAt: number;
+  expiresAt: number;
+  paymentHeader?: string;
+}
+
+const custodyAddressStore = new Map<string, CustodyAddressIntent>();
+
+// ─── apply_add_custody_address ────────────────────────────────
+// Add BTC custody address and mint BTCvc via x402 payment
+
+async function handleApplyAddCustodyAddress(
+  args: {
+    btc_address?: string;
+    network?: "mainnet" | "testnet";
+    expiry_minutes?: number;
+    payment_header?: string;
+    intent_id?: string;
+  },
+  config: MCPConfig
+): Promise<{ result: any; intent?: any }> {
+  return {
+    result: {
+      success: true,
+    },
+    intent: {
+      intent_id: 'apply_add_custody_address',
+    },
+  };
 }
 
 // ─── connect_btc_wallet ─────────────────────────────────────

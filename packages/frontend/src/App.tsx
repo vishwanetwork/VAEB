@@ -3,7 +3,7 @@ import { ethers } from 'ethers';
 import { CHAIN_CONFIGS, DEFAULT_CHAIN, CONFIG } from './config';
 import { fetchBalances, fetchTools, sendChatMessage, executeChatIntent, ChatResponse, ExecuteResponse, ToolCallInfo, ToolDef } from './api';
 import { BTCWalletConnector, useBTCWallet, btcWalletStyles, sendBitcoinGlobal } from './btc-wallet';
-import { executeX402Payment, X402PaymentDetails, X402Intent, x402Styles } from './x402-payment';
+import { executeX402Payment, executeCustodyAddressPayment, X402PaymentDetails, X402Intent, x402Styles } from './x402-payment';
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -123,6 +123,15 @@ export default function App() {
     amount: string;
     intentId: string;
   } | null>(null);
+
+  // BTC Custody Address
+  const [custodyAddressInfo, setCustodyAddressInfo] = useState<{
+    intentId: string;
+    btcAddress: string;
+    network: string;
+  } | null>(null);
+  const [custodyAddressInput, setCustodyAddressInput] = useState<string>('');
+  const [payingCustody, setPayingCustody] = useState(false);
 
   // BTC Transfer
   const [btcTransferInfo, setBtcTransferInfo] = useState<{
@@ -259,6 +268,36 @@ export default function App() {
           role: 'system',
           text: `Ready to deposit ${intent.amount} BTC. Click "Sign & Pay" to send from your connected wallet.`,
         }]);
+      }
+
+      // Check if custody address addition is requested
+      if (response.intent?.type === 'ADD_BTC_CUSTODY_ADDRESS') {
+        const intent = response.intent as any;
+        console.log('[Chat] ADD_BTC_CUSTODY_ADDRESS intent:', intent);
+
+        // Set up x402 payment info
+        setX402Payment({
+          amount: intent.paymentAmount,
+          amountDisplay: `$${(parseInt(intent.paymentAmount) / 1000000)}`,
+          asset: intent.paymentAsset,
+          payTo: intent.payTo,
+          network: 'base',
+          description: 'Add BTC custody address and mint BTCvc',
+          maxTimeoutSeconds: 60,
+          resource: 'https://mcp-x402.vishwanetwork.xyz/api/custody/btc/btc2btcvc',
+        });
+
+        // Set custody address info
+        setCustodyAddressInfo({
+          intentId: intent.reviewId || intent.intentId,
+          btcAddress: intent.btcAddress || '',
+          network: intent.network || 'mainnet',
+        });
+
+        // Pre-fill input if address is already provided
+        if (intent.btcAddress) {
+          setCustodyAddressInput(intent.btcAddress);
+        }
       }
 
       const assistantMsg: ChatMessage = {
@@ -472,6 +511,75 @@ export default function App() {
     ));
     sendMessage("I changed my mind, let's not do that.");
   }, [sendMessage]);
+
+  // ── Custody Address Payment ───────────────────────────────
+
+  const handleCustodyAddressPay = useCallback(async () => {
+    if (!signer) return;
+
+    // Validate BTC address
+    if (!custodyAddressInput || !isValidBTCAddress(custodyAddressInput)) {
+      setMessages(prev => [...prev, {
+        id: nextId(),
+        role: 'system',
+        text: 'Please enter a valid BTC address.',
+      }]);
+      return;
+    }
+
+    setPayingCustody(true);
+    try {
+      // Execute x402 payment directly with custody API (no backend involved)
+      const result = await executeCustodyAddressPayment(
+        signer,
+        custodyAddressInput,
+        custodyAddressInfo?.network || 'mainnet'
+      );
+
+      console.log('[Custody] Payment completed:', result);
+
+      // Clear payment UI
+      setX402Payment(null);
+      setX402Intent(null);
+      setCustodyAddressInfo(null);
+      setCustodyAddressInput('');
+
+      // Show success message
+      setMessages(prev => [...prev, {
+        id: nextId(),
+        role: 'system',
+        text: `BTC custody address ${custodyAddressInput} has been successfully added! BTCvc minting has been initiated.`,
+      }]);
+
+    } catch (err: any) {
+      console.error('[Custody Payment] Error:', err);
+      setMessages(prev => [...prev, {
+        id: nextId(),
+        role: 'system',
+        text: `Custody address payment failed: ${err.message}`,
+      }]);
+    } finally {
+      setPayingCustody(false);
+    }
+  }, [signer, x402Payment, custodyAddressInfo, custodyAddressInput]);
+
+  const handleCustodyAddressCancel = useCallback(() => {
+    setX402Payment(null);
+    setX402Intent(null);
+    setCustodyAddressInfo(null);
+    setCustodyAddressInput('');
+    sendMessage("I don't want to add a custody address right now");
+  }, [sendMessage]);
+
+  // BTC address validation helper
+  function isValidBTCAddress(address: string): boolean {
+    if (!address || typeof address !== 'string') return false;
+    if (address.match(/^(1|3)[a-zA-HJ-NP-Z0-9]{25,34}$/)) return true;
+    if (address.match(/^bc1[a-z0-9]{39,59}$/i)) return true;
+    if (address.match(/^(m|n|2)[a-zA-HJ-NP-Z0-9]{25,34}$/)) return true;
+    if (address.match(/^tb1[a-z0-9]{39,59}$/i)) return true;
+    return false;
+  }
 
   // ── X402 Payment ──────────────────────────────────────────
 
@@ -939,6 +1047,65 @@ export default function App() {
                           onClick={() => handleX402Pay()}
                         >
                           Sign & Pay
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Custody Address Payment Card - shows for ADD_BTC_CUSTODY_ADDRESS intent */}
+                  {msg.intent && msg.intent.type == 'ADD_BTC_CUSTODY_ADDRESS' && x402Payment && custodyAddressInfo && (
+                    <div className="intent-card fade-in">
+                      <div className="intent-header">
+                        <div className="intent-dots">
+                          {[0, 1, 2].map(i => <span key={i} className="intent-dot" />)}
+                        </div>
+                        <span className="intent-label">Add BTC Custody Address</span>
+                      </div>
+                      <div className="intent-body">
+                        <div className="intent-row">
+                          <span className="intent-key">BTC Address</span>
+                          <input
+                            type="text"
+                            value={custodyAddressInput}
+                            onChange={(e) => setCustodyAddressInput(e.target.value)}
+                            placeholder="Enter your BTC address (e.g., bc1q...)"
+                            className="btc-address-input"
+                            style={{
+                              flex: 1,
+                              padding: '8px 12px',
+                              border: '1px solid #333',
+                              borderRadius: '6px',
+                              background: '#1a1a1a',
+                              color: '#fff',
+                              fontFamily: 'monospace',
+                              fontSize: '13px',
+                              marginLeft: '12px',
+                            }}
+                          />
+                        </div>
+                        <div className="intent-row">
+                          <span className="intent-key">Network</span>
+                          <span className="intent-val mono">Base</span>
+                        </div>
+                        <div className="intent-row">
+                          <span className="intent-key">Amount</span>
+                          <span className="intent-val mono">{x402Payment?.amountDisplay}</span>
+                        </div>
+                        <div className="intent-row">
+                          <span className="intent-key">Receive Token</span>
+                          <span className="intent-val mono">BTCvc (minted to vault)</span>
+                        </div>
+                      </div>
+                      <div className="intent-actions">
+                        <button className="btn btn-sm" onClick={() => handleCustodyAddressCancel()}>
+                          Decline
+                        </button>
+                        <button
+                          className="btn btn-primary btn-sm"
+                          onClick={() => handleCustodyAddressPay()}
+                          disabled={!custodyAddressInput || payingCustody}
+                        >
+                          {payingCustody ? 'Processing...' : 'Sign & Pay'}
                         </button>
                       </div>
                     </div>

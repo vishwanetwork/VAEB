@@ -106,7 +106,7 @@ async function routeTool(name: string, args: Record<string, unknown>) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return await verifyTools.handle(name, args as any, config as any);
   }
-  if (["init_btc_payment", "confirm_btc_transfer", "get_btc_payment_status", "broadcast_btc_transaction", "connect_btc_wallet", "send_btc_transfer", "prepare_stake_btc"].includes(name)) {
+  if (["init_btc_payment", "confirm_btc_transfer", "get_btc_payment_status", "broadcast_btc_transaction", "connect_btc_wallet", "send_btc_transfer", "prepare_stake_btc", "apply_add_custody_address"].includes(name)) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const out = await btcTools.handle(name, args as any, config as any);
     return out.result;
