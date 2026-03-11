@@ -4,7 +4,19 @@ AI agents executing on-chain transactions shouldn't require blind trust. VAEB is
 
 The agent can't cheat — the ZK proof cryptographically binds the signed intent to the executed calldata. No trust required.
 
+<<<<<<< Updated upstream
 Built for ETH Denver 2026 on Base Sepolia. Authors of [ERC-8150](doc/eip8150.md) (Zero-Knowledge Agent Payment Verification).
+=======
+**Non-custodial (ERC-8150)** — The user holds their own funds. The AgentWallet never touches user tokens directly — it calls `transferFrom(user, recipient, amount)` after the user approves spending and signs a ZKIntent commitment. The agent submits the transaction on behalf of the owner.
+
+**Powered by 0G Serving** — The AI agent runs on [0G's decentralized AI inference network](https://0g.ai), not centralized APIs. 0G Serving provides an OpenAI-compatible endpoint backed by distributed GPU providers, so the entire stack — from AI reasoning to on-chain execution — is decentralized and verifiable.
+
+Built for ETH Denver 2026 and the [0G DeFAI Hackathon](https://0g.ai). Deployed on **Kite AI Testnet** and **Base Sepolia**. Authors of [ERC-8150](doc/eip8150.md) (Zero-Knowledge Agent Payment Verification).
+
+**x402 compatible** — VAEB MCP tools are designed to be gated by [x402](https://github.com/coinbase/x402) (HTTP 402 Payment Required). AI agents pay per tool call in USDC, directly from their wallet. The included **RentaHuman** marketplace demo shows this end-to-end: an AI agent discovers available humans, pays via x402 to hire them, and the payment is ZK-verified on-chain before execution.
+
+**Demo:** [Watch the video walkthrough](https://www.loom.com/share/204aa2dc2b434f0aa06834a7dfb61ff9) 
+>>>>>>> Stashed changes
 
 ---
 
