@@ -18,10 +18,16 @@ template IntentVerifierCore(MAX_ACTIONS) {
     signal input numActions;
 
     // per-action fields
-    signal input actionTypes[MAX_ACTIONS];
-    signal input actionTokens[MAX_ACTIONS];
-    signal input actionTargets[MAX_ACTIONS];
-    signal input actionAmounts[MAX_ACTIONS];
+    // SWAP: [0, tokenIn, tokenOut, router, fee, recipient, deadline, amountIn, amountOutMin, sqrtPriceLimitX96]
+    // TRANSFER: [1, token, recipient, amount, 0, 0, 0, 0, 0, 0]
+    // APPROVE: [2, token, spender, amount, 0, 0, 0, 0, 0, 0]
+    // DEPOSIT: [3, token, pool, amount, onBehalfOf, referralCode, 0, 0, 0, 0]
+    // WITHDRAW: [4, token, pool, amount, recipient, 0, 0, 0, 0, 0]
+    // BORROW: [5, asset, pool, amount, interestRateMode, referralCode, onBehalfOf, 0, 0, 0]
+    // REPAY: [6, asset, pool, amount, interestRateMode, onBehalfOf, 0, 0, 0, 0]
+    // STAKE: [7, lidoContract, recipient, amount, referral, 0, 0, 0, 0, 0]
+    // UNSTAKE: [8, lidoContract, stETHAmount, recipient, 0, 0, 0, 0, 0, 0]
+    signal input actionFields[MAX_ACTIONS][10];
 
     // action commitments (output from each action proof)
     signal input actionCommitments[MAX_ACTIONS];
@@ -43,11 +49,10 @@ template IntentVerifierCore(MAX_ACTIONS) {
     actionAccumulator.inputs[0] <== bundleHasher.out;
 
     for (var i = 0; i < MAX_ACTIONS; i++) {
-        actionHashers[i] = Poseidon(4);
-        actionHashers[i].inputs[0] <== actionTypes[i];
-        actionHashers[i].inputs[1] <== actionTokens[i];
-        actionHashers[i].inputs[2] <== actionTargets[i];
-        actionHashers[i].inputs[3] <== actionAmounts[i];
+        actionHashers[i] = Poseidon(10);
+        for (var j = 0; j < 10; j++) {
+            actionHashers[i].inputs[j] <== actionFields[i][j];
+        }
 
         actionAccumulator.inputs[i + 1] <== actionHashers[i].out;
     }
@@ -75,13 +80,12 @@ template IntentVerifierCore(MAX_ACTIONS) {
         actionUsed[i].in[1] <== numActions;
 
         unused[i] <== 1 - actionUsed[i].out;
-        unused[i] * actionTypes[i] === 0;
-        unused[i] * actionTokens[i] === 0;
-        unused[i] * actionTargets[i] === 0;
-        unused[i] * actionAmounts[i] === 0;
+        for (var j = 0; j < 10; j++) {
+            unused[i] * actionFields[i][j] === 0;
+        }
     }
 
     valid <== 1;
 }
 
-component main {public [commitment, chainId, signerAddress, actionCommitmentsRoot, nonce, expiry]} = IntentVerifierCore(4);
+component main {public [commitment, chainId, signerAddress, nonce, expiry]} = IntentVerifierCore(4);
